@@ -69,6 +69,8 @@ class SignalCommunicator(QObject):
     updateOpponentHandSignal = pyqtSignal(int, list)
     updateDeckSignal = pyqtSignal(dict)
     startGameSignal = pyqtSignal()
+    updateHandButtonsSignal = pyqtSignal(list, QHBoxLayout)
+    proceedWithGameSetupSignal = pyqtSignal()
 
 class Server:
     def __init__(self, host, port, communicator):
@@ -237,19 +239,48 @@ class Client:
 
     def recvall(self, sock, n):
         data = b''
-        print(n)
         while len(data) < n:
             packet = sock.recv(n - len(data))
             if not packet:
                 return None
             data += packet
-            print("len data", len(data))
         return data
 
     def close(self):
         if self.client_socket:  # Ensure the socket is valid before closing
             self.client_socket.close()
             self.client_socket = None
+
+class GameOverDialog(QDialog):
+    def __init__(self, winner_name, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Game Over")
+        self.setGeometry(805, 350, 300, 200)
+
+        layout = QVBoxLayout()
+
+        label = QLabel(f"Game Over! {winner_name} wins!")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(label)
+
+        buttonBox = QHBoxLayout()
+        closeButton = QPushButton("Close")
+        closeButton.clicked.connect(self.closeGame)
+        restartButton = QPushButton("Restart")
+        restartButton.clicked.connect(self.restartGame)
+        buttonBox.addWidget(closeButton)
+        buttonBox.addWidget(restartButton)
+        layout.addLayout(buttonBox)
+
+        self.setLayout(layout)
+
+    def closeGame(self):
+        QCoreApplication.instance().quit()
+
+    def restartGame(self):
+        self.accept()  # Close the dialog and restart the game
+        QCoreApplication.instance().quit()
+        QCoreApplication.instance().exec()  # Restart the application
 
 class HomeScreen(QWidget):
     def __init__(self, communicator):
@@ -530,6 +561,7 @@ class GameView(QWidget):
         self.communicator.updateOpponentBottomCardsSignal.connect(self.updateOpponentBottomCards)
         self.communicator.updateOpponentTopCardsSignal.connect(self.updateOpponentTopCards)
         self.communicator.updateOpponentHandSignal.connect(self.updateOpponentHand)
+        self.communicator.updateHandButtonsSignal.connect(self.updateHandButtons)
 
     def initUI(self):
         self.setWindowTitle(f'Palace Card Game - {self.player_type}')
@@ -766,6 +798,8 @@ class GameView(QWidget):
                 'bottomCards': player.bottomCards,
                 'hand': player.hand
             })
+        self.confirmButton.setDisabled(True)
+        self.disablePlayerHand()
     
     def updateUI(self, currentPlayer, deckSize, pile):
         if self.controller.topCardSelectionPhase:
@@ -793,12 +827,23 @@ class GameView(QWidget):
                 self.pileLabel.setPixmap(pixmap)
 
             self.placeButton.setEnabled(len(self.controller.selectedCards) > 0)
+            self.enableOpponentHandNotClickable()
+            # if self.controller.is_host:
+            #     if self.controller.currentPlayerIndex == 0:
+            #         self.enablePlayerHand()
+            #     else:
+            #         self.disablePlayerHand()
+            # else:
+            #     if self.controller.currentPlayerIndex == 1:
+            #         self.enablePlayerHand()
+            #     else:
+            #         self.disablePlayerHand()
        
     def revealCard(self, cardLabel, card):
         pixmap = QPixmap(fr"_internal/palaceData/cards/{card[0].lower()}_of_{card[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         cardLabel.setPixmap(pixmap)
 
-    def showTopCardSelection(self, player):
+    def showTopCardSelection(self):
         self.chosenCards = []
         self.cardButtons = []
 
@@ -829,6 +874,13 @@ class GameView(QWidget):
             widget = self.playerHandLayout.itemAt(i).widget()
             if widget:
                 widget.setEnabled(False)
+ 
+    def enableOpponentHandNotClickable(self):
+        for i in range(self.opponentHandLayout.count()):
+            widget = self.opponentHandLayout.itemAt(i).widget()
+            if widget:
+                widget.setEnabled(True)
+                widget.mousePressEvent = lambda event: None  # Ensure opponent's cards are not clickable
 
 class GameController(QObject):
     def __init__(self, numPlayers, difficulty, connection=None, is_host=False):
@@ -838,9 +890,10 @@ class GameController(QObject):
         self.is_host = is_host
         self.communicator = SignalCommunicator() if connection is None else connection.communicator
         self.communicator.startGameSignal.connect(self.proceedWithGameSetup)
+        self.communicator.proceedWithGameSetupSignal.connect(self.proceedWithGameSetupOnMainThread)
 
-        player_type = "Player 1" if is_host else "Player 2"
-        self.view = GameView(self, player_type, self.communicator)
+        self.player_type = "Player 1" if is_host else "Player 2"
+        self.view = GameView(self, self.player_type, self.communicator)
         self.players = [Player("Player 1"), Player("Player 2")]
         self.deck = []
         self.pile = []
@@ -870,11 +923,10 @@ class GameController(QObject):
         print(f"{currentPlayer.name} picks up the pile")
         self.view.pileLabel.setText("Pile: Empty")
         currentPlayer.sevenSwitch = False
-
-        self.view.updatePlayerHandButtons(currentPlayer.hand)
-        self.view.updatePlayerBottomCardButtons(currentPlayer.bottomCards)
         self.updateUI()
+        self.send_game_state()
         self.changeTurn()
+        self.view.placeButton.setText("Opponent's Turn...")
 
     def setupGame(self):
         if self.is_host:
@@ -884,18 +936,18 @@ class GameController(QObject):
             self.dealInitialCards(self.players[1])
             self.send_deck_to_client()
             self.view.updatePlayerHandButtons(self.players[0].hand)
-            self.view.showTopCardSelection(self.players[0])
         else:
             self.view.updatePlayerHandButtons(self.players[1].hand)
-            self.view.showTopCardSelection(self.players[1])
+        self.view.showTopCardSelection()
 
     def proceedWithGameSetup(self):
-        QMetaObject.invokeMethod(self, "proceedWithGameSetupOnMainThread", Qt.ConnectionType.QueuedConnection)
+        self.communicator.proceedWithGameSetupSignal.emit()
 
-    @pyqtSlot()
     def proceedWithGameSetupOnMainThread(self):
         self.topCardSelectionPhase = False
         self.updateUI()
+        if self.player_type == "Player 2":
+            self.view.disablePlayerHand()
         self.startGameLoop()
 
     def createDeck(self):
@@ -922,6 +974,7 @@ class GameController(QObject):
         self.players[1].topCards = data['player2top']
         self.players[1].hand = data['player2hand']
         self.view.updatePlayerHandButtons(self.players[1].hand)
+        self.view.placeButton.setText("Opponent's Turn...")
 
     def checkBothPlayersConfirmed(self):
         time.sleep(1)
@@ -954,25 +1007,33 @@ class GameController(QObject):
                 self.view.updateOpponentTopCardButtons(self.players[0].topCards)
                 self.view.updatePlayerBottomCardButtons(self.players[1].bottomCards)
                 self.view.updateOpponentBottomCardButtons(self.players[0].bottomCards)
-        
-            if self.is_host and self.currentPlayerIndex == 0:
-                self.view.enablePlayerHand()
-            elif not self.is_host and self.currentPlayerIndex == 1:
-                self.view.enablePlayerHand()
-            else:
-                self.view.disablePlayerHand()
-
-            self.updatePlayableCards()
 
     def prepareCardPlacement(self, cardIndex, cardLabel):
         card = self.players[self.currentPlayerIndex].hand[cardIndex]
         if (card, cardLabel) in self.selectedCards:
             self.selectedCards.remove((card, cardLabel))
-            cardLabel.setStyleSheet("border: 0px solid black; background-color: transparent;")
+            cardLabel.setStyleSheet("border: 0px solid black; background-color: transparent;") 
         else:
             self.selectedCards.append((card, cardLabel))
-            cardLabel.setStyleSheet("border: 0px solid black; background-color: blue;")
-        self.view.placeButton.setEnabled(len(self.selectedCards) > 0)
+            cardLabel.setStyleSheet("border: 0px solid black; background-color: blue;") 
+
+        # Enable all buttons with the same rank, disable the rest
+        selectedCardRank = card[0]
+        if not self.selectedCards:
+            for i in range(self.view.playerHandLayout.count()):
+                lbl = self.view.playerHandLayout.itemAt(i).widget()
+                handCard = self.players[self.currentPlayerIndex].hand[i]
+                if handCard[3] or self.isCardPlayable(handCard):  
+                    lbl.setEnabled(True)
+        else:
+            for i in range(self.view.playerHandLayout.count()):
+                lbl = self.view.playerHandLayout.itemAt(i).widget()
+                handCard = self.players[self.currentPlayerIndex].hand[i]
+                if handCard[0] == selectedCardRank or (handCard, lbl) in self.selectedCards:
+                    lbl.setEnabled(True)
+                elif not handCard[3]:  
+                    lbl.setEnabled(False)
+        self.view.placeButton.setEnabled(len(self.selectedCards) > 0)  
         if self.view.placeButton.text() == "Place":
             self.view.placeButton.setText("Select A Card")
         else:
@@ -1016,7 +1077,7 @@ class GameController(QObject):
             pixmap = QPixmap(fr"_internal/palaceData/cards/{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.view.pileLabel.setPixmap(pixmap)
             QCoreApplication.processEvents()
-            time.sleep(1.5)
+            time.sleep(1)
             self.pickUpPile()
             for card in reversed(player.hand):
                 if card[3]:
@@ -1024,7 +1085,9 @@ class GameController(QObject):
             self.view.updatePlayerHandButtons(player.hand)
             self.view.updatePlayerBottomCardButtons(player.bottomCards)
             self.view.setPlayerHandEnabled(False, self.view.playerHandLayout)
-            self.view.placeButton.setText("AI Turn...")
+            self.view.placeButton.setText("Opponent's Turn...")
+            self.send_game_state()
+            self.changeTurn()
             return
 
         self.selectedCards = []
@@ -1034,7 +1097,6 @@ class GameController(QObject):
             player.hand.append(self.deck.pop(0))
 
         self.view.updatePlayerHandButtons(player.hand)
-        self.updatePlayableCards()
 
         if self.checkFourOfAKind():
             print("Four of a kind! Clearing the pile.")
@@ -1042,8 +1104,10 @@ class GameController(QObject):
             self.view.pileLabel.setText("Bombed")
             self.updateUI()
             gameOver = self.checkGameState()
-            return
-
+            self.send_game_state()
+            if gameOver:
+                self.showGameOverDialog(player.name)
+                return
         if '2' in [card[0] for card in playedCards]:
             self.players[self.currentPlayerIndex].sevenSwitch = False
             topCard = self.pile[-1]
@@ -1051,7 +1115,9 @@ class GameController(QObject):
             self.view.pileLabel.setPixmap(pixmap)
             self.updateUI()
             gameOver = self.checkGameState()
+            self.send_game_state()
             if gameOver:
+                self.showGameOverDialog(player.name)
                 return
         elif '10' in [card[0] for card in playedCards]:
             self.pile.clear()
@@ -1059,7 +1125,9 @@ class GameController(QObject):
             self.view.pileLabel.setText("Bombed")
             self.updateUI()
             gameOver = self.checkGameState()
+            self.send_game_state()
             if gameOver:
+                self.showGameOverDialog(player.name)
                 return
         else:
             if '7' in [card[0] for card in playedCards]:
@@ -1072,11 +1140,12 @@ class GameController(QObject):
             self.view.pileLabel.setPixmap(pixmap)
             self.updateUI()
             gameOver = self.checkGameState()
-            if gameOver:
-                return
-
             self.send_game_state()
+            if gameOver:
+                self.showGameOverDialog(player.name)
+                return
             self.changeTurn()
+            self.view.disablePlayerHand()
             self.view.placeButton.setText("Opponent's Turn...")
 
     def changeTurn(self):
@@ -1119,7 +1188,7 @@ class GameController(QObject):
                 self.view.currentPlayerLabel.setText(f"{currentPlayer.name} wins!")
                 self.view.pickUpPileButton.setDisabled(True)
                 self.view.placeButton.setDisabled(True)
-                for button in self.view.playCardButtons:
+                for button in self.playCardButtons:
                     button.setDisabled(True)
                 print(f"{currentPlayer.name} wins!")
                 gameOver = True
@@ -1127,7 +1196,8 @@ class GameController(QObject):
 
     def updatePlayableCards(self):
         currentPlayer = self.players[self.currentPlayerIndex]
-        for i, lbl in enumerate(self.playCardButtons):
+        for i in range(self.view.playerHandLayout.count()):
+            lbl = self.view.playerHandLayout.itemAt(i).widget()
             handCard = currentPlayer.hand[i]
             if handCard[3] or self.isCardPlayable(handCard):
                 lbl.setEnabled(True)
@@ -1142,8 +1212,14 @@ class GameController(QObject):
             else:
                 self.connection.send_to_server(data)
 
+    def showGameOverDialog(self, winner_name):
+        dialog = GameOverDialog(winner_name, self.view)
+        dialog.exec()
+    
     def receive_game_state(self, data):
         self.deserialize_game_state(data)
+        self.view.placeButton.setText("Select a Card")
+        self.updatePlayableCards()
 
     def serialize_game_state(self):
         return {
@@ -1162,12 +1238,14 @@ class GameController(QObject):
             ],
             'deck': self.deck,
             'pile': self.pile,
+            'seven': self.players[self.currentPlayerIndex].sevenSwitch,
             'currentPlayerIndex': (self.currentPlayerIndex + 1) % len(self.players),
             'topCardSelectionPhase': self.topCardSelectionPhase
         }
 
     def deserialize_game_state(self, data):
         self.currentPlayerIndex = data['currentPlayerIndex']
+        self.players[self.currentPlayerIndex].sevenSwitch = data['seven']
         self.players[0].hand = data['players'][0]['hand']
         self.players[0].topCards = data['players'][0]['topCards']
         self.players[0].bottomCards = data['players'][0]['bottomCards']
@@ -1177,10 +1255,11 @@ class GameController(QObject):
         self.deck = data['deck']
         self.pile = data['pile']
         self.topCardSelectionPhase = data['topCardSelectionPhase']
-        self.view.updateOpponentBottomCardButtons(self.players[(self.currentPlayerIndex + 1) % len(self.players)].bottomCards)
-        self.view.updateOpponentTopCardButtons(self.players[(self.currentPlayerIndex + 1) % len(self.players)].topCards)
-        self.view.updateOpponentHandButtons(self.players[(self.currentPlayerIndex + 1) % len(self.players)].hand)
-
+        if self.currentPlayerIndex == 1:
+            self.communicator.updateHandButtonsSignal.emit(self.players[0].hand, self.view.opponentHandLayout)
+        else:
+            self.communicator.updateHandButtonsSignal.emit(self.players[1].hand, self.view.opponentHandLayout)
+        
 def main():
     global scalingFactorWidth
     global scalingFactorHeight
