@@ -118,6 +118,8 @@ class Server:
             self.controller.proceedWithGameSetup()
         elif data['action'] == 'playCard':
             self.controller.receive_game_state(data)
+        elif data['action'] == 'play_again_request':
+            self.controller.playAgainRequested.emit()
 
     def send_to_client(self, data):
         if self.client_socket:
@@ -155,8 +157,10 @@ class Server:
         return data
 
     def close(self):
-        self.client_socket.close()
-        self.server_socket.close()
+        if self.client_socket:
+            self.client_socket.close()
+        if self.server_socket:
+            self.server_socket.close()
 
 
 class Client:
@@ -179,7 +183,6 @@ class Client:
             try:
                 data = self.receive_data(self.client_socket)
                 if data:
-                    # print(f"Data received in handle_server")
                     self.process_server_data(data)
                 else:
                     print("No data received in handle_server")
@@ -199,7 +202,6 @@ class Client:
         if data is None:
             print("Received None data from server")
             return
-        # print(f"Processing data")
         if data['action'] == 'confirm_top_cards':
             player_index = int(data['player_index'])
             self.communicator.updateOpponentBottomCardsSignal.emit(player_index, data['bottomCards'])
@@ -212,6 +214,8 @@ class Client:
             self.controller.proceedWithGameSetup()
         elif data['action'] == 'playCard':
             self.controller.receive_game_state(data)
+        elif data['action'] == 'play_again_request':
+            self.controller.playAgainRequested.emit()
 
     def send_to_server(self, data):
         if self.client_socket:
@@ -252,6 +256,10 @@ class Client:
             self.client_socket = None
 
 class GameOverDialog(QDialog):
+    playAgainSignal = pyqtSignal()
+    mainMenuSignal = pyqtSignal()
+    exitSignal = pyqtSignal()
+
     def __init__(self, winner_name, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Game Over")
@@ -264,28 +272,36 @@ class GameOverDialog(QDialog):
         layout.addWidget(label)
 
         buttonBox = QHBoxLayout()
-        closeButton = QPushButton("Close")
-        closeButton.clicked.connect(self.closeGame)
-        restartButton = QPushButton("Restart")
-        restartButton.clicked.connect(self.restartGame)
-        buttonBox.addWidget(closeButton)
-        buttonBox.addWidget(restartButton)
+        playAgainButton = QPushButton("Play Again")
+        playAgainButton.clicked.connect(self.playAgain)
+        mainMenuButton = QPushButton("Main Menu")
+        mainMenuButton.clicked.connect(self.mainMenu)
+        exitButton = QPushButton("Exit")
+        exitButton.clicked.connect(self.exitGame)
+        buttonBox.addWidget(playAgainButton)
+        buttonBox.addWidget(mainMenuButton)
+        buttonBox.addWidget(exitButton)
         layout.addLayout(buttonBox)
 
         self.setLayout(layout)
 
-    def closeGame(self):
-        QCoreApplication.instance().quit()
+    def playAgain(self):
+        self.playAgainSignal.emit()
+        self.accept()
 
-    def restartGame(self):
-        self.accept()  # Close the dialog and restart the game
+    def mainMenu(self):
+        self.mainMenuSignal.emit()
+        self.accept()
+
+    def exitGame(self):
+        self.exitSignal.emit()
         QCoreApplication.instance().quit()
-        QCoreApplication.instance().exec()  # Restart the application
 
 class HomeScreen(QWidget):
     def __init__(self, communicator):
         super().__init__()
         self.communicator = communicator
+        self.controller = None
         self.initUI()
 
     def initUI(self):
@@ -337,7 +353,12 @@ class HomeScreen(QWidget):
         layout.addWidget(buttonContainer, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.setLayout(layout)
-        
+    
+    def returnToMainMenu(self):
+        self.show()
+        if self.controller:
+            self.controller.view.close()
+    
     def showPlayerSelectionDialog(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Select Number of Players")
@@ -409,8 +430,9 @@ class HomeScreen(QWidget):
             self.hide()
             difficulty_map = {1: 'easy', 2: 'medium', 3: 'hard'}
             difficulty_level = difficulty_map.get(difficulty, 'medium')
-            controller = GameController(numPlayers, difficulty_level)  # Start game with selected number of players and difficulty level
-            controller.view.show()
+            self.controller = GameController(numPlayers, difficulty_level)  # Start game with selected number of players and difficulty level
+            self.controller.mainMenuRequested.connect(self.returnToMainMenu)
+            self.controller.view.show()
 
     def playOnline(self):
         self.onlineDialog = QDialog(self)
@@ -444,6 +466,7 @@ class HomeScreen(QWidget):
         self.server = Server('localhost', 5555, self.communicator)  # Pass communicator to Server
         self.controller = GameController(numPlayers=2, difficulty='medium', connection=self.server, is_host=True)  # 2 players for online
         self.server.controller = self.controller  # Set the controller attribute in the server
+        self.controller.mainMenuRequested.connect(self.returnToMainMenu)
         self.controller.view.show()
 
     def joinLobby(self):
@@ -452,6 +475,7 @@ class HomeScreen(QWidget):
         self.client = Client('localhost', 5555, self.communicator)  # Pass communicator to Client
         self.controller = GameController(numPlayers=2, difficulty='medium', connection=self.client, is_host=False)  # 2 players for online
         self.client.controller = self.controller  # Set the controller attribute in the client
+        self.controller.mainMenuRequested.connect(self.returnToMainMenu)
         self.controller.view.show()
 
     def showRules(self):
@@ -566,12 +590,37 @@ class GameView(QWidget):
     def initUI(self):
         self.setWindowTitle(f'Palace Card Game - {self.player_type}')
         self.setWindowIcon(QIcon(r"_internal\palaceData\palace.ico"))
-        self.setGeometry(250, 75, 500, 500)
-        self.setFixedSize(1100, 900)
+        self.setGeometry(250, 75, 1100, 900)  # Set the size of the window
 
         self.layout = QGridLayout()
 
-        # Center
+        # Disconnect Button (row 0, column 0)
+        # self.disconnectButton = QPushButton("Disconnect")
+        # self.disconnectButton.clicked.connect(self.controller.handleMainMenu)
+        # self.layout.addWidget(self.disconnectButton, 0, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Opponent Hand (row 0, column 1)
+        self.opponentHandLayout = QHBoxLayout()
+        self.layout.addLayout(self.opponentHandLayout, 0, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Opponent Hand Label (row 1, column 1)
+        self.opponentHandLabel = QLabel(f"{'Player 2' if self.player_type == 'Player 1' else 'Player 1'}'s Hand")
+        self.opponentHandLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.layout.addWidget(self.opponentHandLabel, 1, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Opponent Top Cards (row 2, column 1)
+        self.opponentTopCardsLayout = QHBoxLayout()
+        self.layout.addLayout(self.opponentTopCardsLayout, 2, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Opponent Bottom Cards (row 3, column 1)
+        self.opponentBottomCardsLayout = QHBoxLayout()
+        self.layout.addLayout(self.opponentBottomCardsLayout, 3, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Spacer (row 4, column 1)
+        spacer1 = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+        self.layout.addItem(spacer1, 4, 1)
+
+        # Center layout setup (row 5, column 1)
         self.deckLabel = QLabel()  # Initialize the deck label
         self.deckLabel.setFixedWidth(190)
         self.deckLabel.setVisible(False)
@@ -586,67 +635,63 @@ class GameView(QWidget):
         spacer = QSpacerItem(60, 1, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
 
         self.consoleLayout = QHBoxLayout()
-        self.consoleLayout.addWidget(self.deckLabel, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.consoleLayout.addWidget(self.deckLabel, alignment=Qt.AlignmentFlag.AlignLeft)
         self.consoleLayout.addWidget(self.pileLabel, alignment=Qt.AlignmentFlag.AlignCenter)
         self.consoleLayout.addItem(spacer)
-        self.consoleLayout.addWidget(self.pickUpPileButton, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.consoleLayout.addWidget(self.pickUpPileButton, alignment=Qt.AlignmentFlag.AlignRight)
+
+        self.centerContainer = QWidget()
+        self.centerContainer.setLayout(self.consoleLayout)
+        self.centerContainer.setFixedWidth(500)  # Adjust width as necessary
 
         self.centerLayout = QVBoxLayout()
         self.centerLayout.addWidget(QLabel(""))
         self.centerLayout.addWidget(self.currentPlayerLabel, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.centerLayout.addLayout(self.consoleLayout)
+        self.centerLayout.addWidget(self.centerContainer, alignment=Qt.AlignmentFlag.AlignCenter)
         self.centerLayout.addWidget(QLabel(""))
         self.centerLayout.addWidget(QLabel(""))
 
-        self.layout.addLayout(self.centerLayout, 4, 4)
+        self.layout.addLayout(self.centerLayout, 5, 1, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Player (Bottom)
-        if self.player_type == "Player 1":
-            self.playerHandLabel = QLabel("Player 1's Hand")
-        else:
-            self.playerHandLabel = QLabel("Player 2's Hand")
-        self.playerHandLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.playerHandLayout = QHBoxLayout()
-        self.topCardsLayout = QHBoxLayout()
+        # Spacer (row 6, column 1)
+        spacer2 = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+        self.layout.addItem(spacer2, 6, 1)
+
+        # Player Bottom Cards (row 7, column 1)
         self.bottomCardsLayout = QHBoxLayout()
+        self.layout.addLayout(self.bottomCardsLayout, 7, 1, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.playerContainer = QVBoxLayout()
-        self.playerContainer.addLayout(self.bottomCardsLayout)
-        self.playerContainer.addLayout(self.topCardsLayout)
-        self.playerContainer.addWidget(self.playerHandLabel)
-        self.playerContainer.addLayout(self.playerHandLayout)
+        # Player Top Cards (row 8, column 1)
+        self.topCardsLayout = QHBoxLayout()
+        self.layout.addLayout(self.topCardsLayout, 8, 1, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self.layout.addLayout(self.playerContainer, 8, 4)
+        # Player Hand Label (row 9, column 1)
+        self.playerHandLabel = QLabel(f"{self.player_type}'s Hand")
+        self.playerHandLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.layout.addWidget(self.playerHandLabel, 9, 1, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Opponent (Top)
-        if self.player_type == "Player 1":
-            self.opponentHandLabel = QLabel("Player 2's Hand")
-        else:
-            self.opponentHandLabel = QLabel("Player 1's Hand")
-        self.opponentHandLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.opponentHandLayout = QHBoxLayout()
-        self.opponentTopCardsLayout = QHBoxLayout()
-        self.opponentBottomCardsLayout = QHBoxLayout()
-
-        self.opponentContainer = QVBoxLayout()
-        self.opponentContainer.addLayout(self.opponentHandLayout)
-        self.opponentContainer.addWidget(self.opponentHandLabel)
-        self.opponentContainer.addLayout(self.opponentTopCardsLayout)
-        self.opponentContainer.addLayout(self.opponentBottomCardsLayout)
-
-        self.layout.addLayout(self.opponentContainer, 0, 4)
-
-        # Play card buttons layout
+        # Player Hand (row 10, column 1)
+        self.playerHandLayout = QHBoxLayout()
+        self.layout.addLayout(self.playerHandLayout, 10, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        # Confirm/Place Button (row 11, column 1)
+        buttonsContainerLayout = QVBoxLayout()
         self.confirmButton = QPushButton("Confirm")
         self.confirmButton.setEnabled(False)
+        self.confirmButton.setFixedWidth(240)
         self.confirmButton.clicked.connect(self.confirmTopCardSelection)
-        self.layout.addWidget(self.confirmButton, 10, 4)
-
         self.placeButton = QPushButton("Select A Card")
         self.placeButton.setEnabled(False)
+        self.confirmButton.setFixedWidth(240)
         self.placeButton.clicked.connect(self.controller.placeCard)
         self.placeButton.setVisible(False)
-        self.layout.addWidget(self.placeButton, 10, 4)
+
+        buttonsContainerLayout.addWidget(self.confirmButton, alignment=Qt.AlignmentFlag.AlignCenter)
+        buttonsContainerLayout.addWidget(self.placeButton, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(buttonsContainerLayout, 11, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Adjust the width of the center console column
+        self.layout.setColumnMinimumWidth(1, 500)
 
         self.setLayout(self.layout)
 
@@ -769,7 +814,10 @@ class GameView(QWidget):
             self.opponentBottomCardsLayout.addWidget(self.placeholder)
 
     def confirmTopCardSelection(self):
-        player_index = 0 if self.controller.is_host else 1
+        if self.controller.is_host:
+            player_index = 0
+        else:
+            player_index = 1
         player = self.controller.players[player_index]
         for card, _ in self.chosenCards:
             player.topCards.append((card[0], card[1], True, False))
@@ -828,16 +876,6 @@ class GameView(QWidget):
 
             self.placeButton.setEnabled(len(self.controller.selectedCards) > 0)
             self.enableOpponentHandNotClickable()
-            # if self.controller.is_host:
-            #     if self.controller.currentPlayerIndex == 0:
-            #         self.enablePlayerHand()
-            #     else:
-            #         self.disablePlayerHand()
-            # else:
-            #     if self.controller.currentPlayerIndex == 1:
-            #         self.enablePlayerHand()
-            #     else:
-            #         self.disablePlayerHand()
        
     def revealCard(self, cardLabel, card):
         pixmap = QPixmap(fr"_internal/palaceData/cards/{card[0].lower()}_of_{card[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
@@ -848,7 +886,10 @@ class GameView(QWidget):
         self.cardButtons = []
 
     def selectTopCard(self, cardIndex, button):
-        playerIndex = 0 if self.controller.is_host else 1
+        if self.controller.is_host:
+            playerIndex = 0 
+        else:
+            playerIndex = 1
         card = self.controller.players[playerIndex].hand[cardIndex]
         if (card, cardIndex) in self.chosenCards:
             self.chosenCards.remove((card, cardIndex))
@@ -874,7 +915,7 @@ class GameView(QWidget):
             widget = self.playerHandLayout.itemAt(i).widget()
             if widget:
                 widget.setEnabled(False)
- 
+
     def enableOpponentHandNotClickable(self):
         for i in range(self.opponentHandLayout.count()):
             widget = self.opponentHandLayout.itemAt(i).widget()
@@ -882,17 +923,30 @@ class GameView(QWidget):
                 widget.setEnabled(True)
                 widget.mousePressEvent = lambda event: None  # Ensure opponent's cards are not clickable
 
+    def closeEvent(self, event):
+        self.controller.closeConnections()
+        event.accept()
+    
 class GameController(QObject):
+    playAgainRequested = pyqtSignal()
+    mainMenuRequested = pyqtSignal()
+    exitRequested = pyqtSignal()
+
     def __init__(self, numPlayers, difficulty, connection=None, is_host=False):
         super().__init__()
         self.numPlayers = numPlayers
         self.difficulty = difficulty
         self.is_host = is_host
-        self.communicator = SignalCommunicator() if connection is None else connection.communicator
+        if connection is None:
+            self.communicator = SignalCommunicator()
+        else:
+            self.communicator = connection.communicator
         self.communicator.startGameSignal.connect(self.proceedWithGameSetup)
         self.communicator.proceedWithGameSetupSignal.connect(self.proceedWithGameSetupOnMainThread)
-
-        self.player_type = "Player 1" if is_host else "Player 2"
+        if is_host:
+            self.player_type = "Player 1" 
+        else:
+            self.player_type = "Player 2"
         self.view = GameView(self, self.player_type, self.communicator)
         self.players = [Player("Player 1"), Player("Player 2")]
         self.deck = []
@@ -905,6 +959,55 @@ class GameController(QObject):
         self.setupGame()
 
         self.communicator.updateDeckSignal.connect(self.receive_deck_from_server)
+
+        # Connect play again, main menu, and exit signals
+        self.playAgainRequested.connect(self.handlePlayAgain)
+        self.mainMenuRequested.connect(self.handleMainMenu)
+        self.exitRequested.connect(QCoreApplication.instance().quit)
+
+        self.playAgainCount = 0
+
+    
+    def showGameOverDialog(self, winner_name):
+        dialog = GameOverDialog(winner_name, self.view)
+        dialog.playAgainSignal.connect(self.requestPlayAgain)
+        dialog.mainMenuSignal.connect(self.mainMenuRequested)
+        dialog.exitSignal.connect(self.exitRequested)
+        dialog.exec()
+
+    def requestPlayAgain(self):
+        self.playAgainCount += 1
+        if self.playAgainCount == 2:  # Both players have requested to play again
+            self.playAgainCount = 0
+            self.resetGame()
+            self.setupGame()
+        else:
+            if self.is_host:
+                self.connection.send_to_client({'action': 'play_again_request'}) 
+            else:
+                self.connection.send_to_server({'action': 'play_again_request'})
+
+    def handlePlayAgain(self):
+        self.playAgainCount += 1
+        if self.playAgainCount == 2:
+            self.playAgainCount = 0
+            self.resetGame()
+            self.setupGame()
+
+    def handleMainMenu(self):
+        self.closeConnections()
+        self.view.close()
+        self.mainMenuRequested.emit()
+
+    def resetGame(self):
+        self.deck = []
+        self.pile = []
+        self.currentPlayerIndex = 0
+        self.selectedCards = []
+        self.playCardButtons = []
+        self.topCardSelectionPhase = True
+        self.players = [Player("Player 1"), Player("Player 2")]
+        self.view.clearSelectionLayout()
     
     def startGameLoop(self):
         self.timer = QTimer()
@@ -985,7 +1088,10 @@ class GameController(QObject):
     
     def send_start_game_signal(self):
         data = {'action': 'start_game', 'game_state': ""}
-        self.connection.send_to_client(data) if self.is_host else self.connection.send_to_server(data)
+        if self.is_host:
+            self.connection.send_to_client(data)
+        else:
+            self.connection.send_to_server(data)
     
     def updateUI(self):
         currentPlayer = self.players[self.currentPlayerIndex]
@@ -1040,7 +1146,10 @@ class GameController(QObject):
             self.view.placeButton.setText("Place")
 
     def isCardPlayable(self, card):
-        topCard = self.pile[-1] if self.pile else None
+        if self.pile:
+            topCard = self.pile[-1]
+        else:
+            topCard = None
         if self.players[self.currentPlayerIndex].sevenSwitch:
             return VALUES[card[0]] <= 7 or card[0] in ['2', '10']
         if not topCard:
@@ -1084,7 +1193,6 @@ class GameController(QObject):
                     player.bottomCards.append(player.hand.pop(player.hand.index(card)))
             self.view.updatePlayerHandButtons(player.hand)
             self.view.updatePlayerBottomCardButtons(player.bottomCards)
-            self.view.setPlayerHandEnabled(False, self.view.playerHandLayout)
             self.view.placeButton.setText("Opponent's Turn...")
             self.send_game_state()
             self.changeTurn()
@@ -1108,6 +1216,7 @@ class GameController(QObject):
             if gameOver:
                 self.showGameOverDialog(player.name)
                 return
+            return
         if '2' in [card[0] for card in playedCards]:
             self.players[self.currentPlayerIndex].sevenSwitch = False
             topCard = self.pile[-1]
@@ -1131,9 +1240,9 @@ class GameController(QObject):
                 return
         else:
             if '7' in [card[0] for card in playedCards]:
-                self.players[(self.currentPlayerIndex + 1) % len(self.players)].sevenSwitch = True
+                self.players[self.currentPlayerIndex].sevenSwitch = True
             else:
-                self.players[(self.currentPlayerIndex + 1) % len(self.players)].sevenSwitch = False
+                self.players[self.currentPlayerIndex].sevenSwitch = False
             self.view.placeButton.setEnabled(False)
             topCard = self.pile[-1]
             pixmap = QPixmap(fr"_internal/palaceData/cards/{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
@@ -1145,13 +1254,14 @@ class GameController(QObject):
                 self.showGameOverDialog(player.name)
                 return
             self.changeTurn()
-            self.view.disablePlayerHand()
             self.view.placeButton.setText("Opponent's Turn...")
 
     def changeTurn(self):
         self.currentPlayerIndex = (self.currentPlayerIndex + 1) % len(self.players)
         self.selectedCards = []
         self.updateUI()
+        self.view.disablePlayerHand()
+        self.view.pickUpPileButton.setEnabled(False)
 
     def checkFourOfAKind(self):
         if len(self.pile) < 4:
@@ -1185,7 +1295,6 @@ class GameController(QObject):
                 placeholder.setFixedSize(BUTTON_HEIGHT, BUTTON_WIDTH)
                 currentPlayer.hand.append(placeholder)
                 self.timer.stop()
-                self.view.currentPlayerLabel.setText(f"{currentPlayer.name} wins!")
                 self.view.pickUpPileButton.setDisabled(True)
                 self.view.placeButton.setDisabled(True)
                 for button in self.playCardButtons:
@@ -1211,14 +1320,11 @@ class GameController(QObject):
                 self.connection.send_to_client(data)
             else:
                 self.connection.send_to_server(data)
-
-    def showGameOverDialog(self, winner_name):
-        dialog = GameOverDialog(winner_name, self.view)
-        dialog.exec()
     
     def receive_game_state(self, data):
         self.deserialize_game_state(data)
         self.view.placeButton.setText("Select a Card")
+        self.view.pickUpPileButton.setEnabled(True)
         self.updatePlayableCards()
 
     def serialize_game_state(self):
@@ -1246,6 +1352,7 @@ class GameController(QObject):
     def deserialize_game_state(self, data):
         self.currentPlayerIndex = data['currentPlayerIndex']
         self.players[self.currentPlayerIndex].sevenSwitch = data['seven']
+        print(self.players[self.currentPlayerIndex].sevenSwitch)
         self.players[0].hand = data['players'][0]['hand']
         self.players[0].topCards = data['players'][0]['topCards']
         self.players[0].bottomCards = data['players'][0]['bottomCards']
@@ -1259,7 +1366,11 @@ class GameController(QObject):
             self.communicator.updateHandButtonsSignal.emit(self.players[0].hand, self.view.opponentHandLayout)
         else:
             self.communicator.updateHandButtonsSignal.emit(self.players[1].hand, self.view.opponentHandLayout)
-        
+    
+    def closeConnections(self):
+        if self.connection:
+            self.connection.close()
+       
 def main():
     global scalingFactorWidth
     global scalingFactorHeight
@@ -1272,7 +1383,7 @@ def main():
     scalingFactorWidth = screenWidth / 1920
     scalingFactorHeight = screenHeight / 1080
     communicator = SignalCommunicator()
-    homeScreen = HomeScreen(communicator)  # Pass the communicator
+    homeScreen = HomeScreen(communicator)
     homeScreen.show()
     sys.exit(app.exec())
 
