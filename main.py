@@ -7,7 +7,7 @@ import struct
 import time
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, \
     QLabel, QDialog, QGridLayout, QRadioButton, QButtonGroup, QSpacerItem, QSizePolicy
-from PyQt6.QtGui import QPixmap, QIcon
+from PyQt6.QtGui import QPixmap, QIcon, QTransform
 from PyQt6.QtCore import Qt, QCoreApplication, QTimer, pyqtSignal, QObject
 import qdarktheme
 
@@ -68,9 +68,6 @@ class SignalCommunicator(QObject):
     updateOpponentHandSignal = pyqtSignal(int, list)
     updateDeckSignal = pyqtSignal(dict)
     startGameSignal = pyqtSignal()
-    updateHandButtonsSignal = pyqtSignal(list, QHBoxLayout, bool)
-    updateTopCardButtonsSignal = pyqtSignal(list, QHBoxLayout, bool)
-    updateBottomCardButtonsSignal = pyqtSignal(list, QHBoxLayout, bool)
     proceedWithGameSetupSignal = pyqtSignal()
     updateUISignal = pyqtSignal()
 
@@ -582,45 +579,37 @@ class GameView(QWidget):
         self.communicator.updateOpponentBottomCardsSignal.connect(self.updateOpponentBottomCards)
         self.communicator.updateOpponentTopCardsSignal.connect(self.updateOpponentTopCards)
         self.communicator.updateOpponentHandSignal.connect(self.updateOpponentHand)
-        self.communicator.updateBottomCardButtonsSignal.connect(self.updatePlayerBottomCardButtons)
-        self.communicator.updateTopCardButtonsSignal.connect(self.updatePlayerTopCardButtons)
-        self.communicator.updateHandButtonsSignal.connect(self.updateHandButtons)
-
+        
     def initUI(self):
         self.setWindowTitle(f'Palace Card Game - {self.playerType}')
         self.setWindowIcon(QIcon(r"_internal\palaceData\palace.ico"))
-        self.setGeometry(250, 75, 1100, 900) 
+        self.setGeometry(250, 75, 1100, 900)
 
         self.layout = QGridLayout()
 
-        # Disconnect Button (row 0, column 0)
-        # self.disconnectButton = QPushButton("Disconnect")
-        # self.disconnectButton.clicked.connect(self.controller.handleMainMenu)
-        # self.layout.addWidget(self.disconnectButton, 0, 0, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # Opponent Hand (row 0, column 1)
+        # Opponent Hand (row 0, column 5)
         self.opponentHandLayout = QHBoxLayout()
-        self.layout.addLayout(self.opponentHandLayout, 0, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(self.opponentHandLayout, 0, 5, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Opponent Hand Label (row 1, column 1)
+        # Opponent Hand Label (row 1, column 5)
         self.opponentHandLabel = QLabel(f"{'Player 2' if self.playerType == 'Player 1' else 'Player 1'}'s Hand")
         self.opponentHandLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.layout.addWidget(self.opponentHandLabel, 1, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addWidget(self.opponentHandLabel, 1, 5, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Opponent Top Cards (row 2, column 1)
+        # Opponent Top Cards (row 2, column 5)
         self.opponentTopCardsLayout = QHBoxLayout()
-        self.layout.addLayout(self.opponentTopCardsLayout, 2, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(self.opponentTopCardsLayout, 2, 5, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Opponent Bottom Cards (row 3, column 1)
+        # Opponent Bottom Cards (row 3, column 5)
         self.opponentBottomCardsLayout = QHBoxLayout()
-        self.layout.addLayout(self.opponentBottomCardsLayout, 3, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(self.opponentBottomCardsLayout, 3, 5, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Spacer (row 4, column 1)
+        # Spacer (row 4, column 5)
         spacer1 = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
-        self.layout.addItem(spacer1, 4, 1)
+        self.layout.addItem(spacer1, 4, 5)
 
-        # Center layout setup (row 5, column 1)
-        self.deckLabel = QLabel()  
+        # Center layout setup (row 5, column 5)
+        self.deckLabel = QLabel()
         self.deckLabel.setFixedWidth(190)
         self.deckLabel.setVisible(False)
         self.pileLabel = QLabel("\t     Select your 3 Top cards...")
@@ -641,7 +630,7 @@ class GameView(QWidget):
 
         self.centerContainer = QWidget()
         self.centerContainer.setLayout(self.consoleLayout)
-        self.centerContainer.setFixedWidth(500)  
+        self.centerContainer.setFixedWidth(500)
 
         self.centerLayout = QVBoxLayout()
         self.centerLayout.addWidget(QLabel(""))
@@ -650,30 +639,30 @@ class GameView(QWidget):
         self.centerLayout.addWidget(QLabel(""))
         self.centerLayout.addWidget(QLabel(""))
 
-        self.layout.addLayout(self.centerLayout, 5, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(self.centerLayout, 5, 5, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Spacer (row 6, column 1)
+        # Spacer (row 6, column 5)
         spacer2 = QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
-        self.layout.addItem(spacer2, 6, 1)
+        self.layout.addItem(spacer2, 6, 5)
 
-        # Player Bottom Cards (row 7, column 1)
+        # Player Bottom Cards (row 7, column 5)
         self.bottomCardsLayout = QHBoxLayout()
-        self.layout.addLayout(self.bottomCardsLayout, 7, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(self.bottomCardsLayout, 7, 5, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Player Top Cards (row 8, column 1)
+        # Player Top Cards (row 8, column 5)
         self.topCardsLayout = QHBoxLayout()
-        self.layout.addLayout(self.topCardsLayout, 8, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(self.topCardsLayout, 8, 5, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Player Hand Label (row 9, column 1)
+        # Player Hand Label (row 9, column 5)
         self.playerHandLabel = QLabel(f"{self.playerType}'s Hand")
         self.playerHandLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.layout.addWidget(self.playerHandLabel, 9, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addWidget(self.playerHandLabel, 9, 5, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Player Hand (row 10, column 1)
+        # Player Hand (row 10, column 5)
         self.playerHandLayout = QHBoxLayout()
-        self.layout.addLayout(self.playerHandLayout, 10, 1, alignment=Qt.AlignmentFlag.AlignCenter)
-        
-        # Confirm/Place Button (row 11, column 1)
+        self.layout.addLayout(self.playerHandLayout, 10, 5, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Confirm/Place Button (row 11, column 5)
         buttonsContainerLayout = QVBoxLayout()
         self.confirmButton = QPushButton("Confirm")
         self.confirmButton.setEnabled(False)
@@ -687,14 +676,47 @@ class GameView(QWidget):
 
         buttonsContainerLayout.addWidget(self.confirmButton, alignment=Qt.AlignmentFlag.AlignCenter)
         buttonsContainerLayout.addWidget(self.placeButton, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.layout.addLayout(buttonsContainerLayout, 11, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.layout.addLayout(buttonsContainerLayout, 11, 5, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Width of the center console column
-        self.layout.setColumnMinimumWidth(1, 500)
+        self.layout.setColumnMinimumWidth(5, 500)
+
+        if self.controller.numPlayers >= 3:
+            # Player 3 setup
+            self.player3HandLayout = QVBoxLayout()
+            self.player3TopCardsLayout = QVBoxLayout()
+            self.player3BottomCardsLayout = QVBoxLayout()
+
+            self.layout.addLayout(self.player3HandLayout, 5, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+            self.player3HandLabel = QLabel("Player 3's Hand")
+            self.player3HandLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.layout.addWidget(self.player3HandLabel, 5, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+            self.layout.addLayout(self.player3TopCardsLayout, 5, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+            self.layout.addLayout(self.player3BottomCardsLayout, 5, 3, alignment=Qt.AlignmentFlag.AlignCenter)
+
+            # Spacer (row 5, column 4)
+            spacer3 = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            self.layout.addItem(spacer3, 5, 4)
+
+        if self.controller.numPlayers == 4:
+            # Player 4 setup
+            self.player4HandLayout = QVBoxLayout()
+            self.player4TopCardsLayout = QVBoxLayout()
+            self.player4BottomCardsLayout = QVBoxLayout()
+
+            # Spacer (row 5, column 6)
+            self.layout.addItem(spacer3, 5, 6)
+
+            self.layout.addLayout(self.player4BottomCardsLayout, 5, 7, alignment=Qt.AlignmentFlag.AlignCenter)
+            self.layout.addLayout(self.player4TopCardsLayout, 5, 8, alignment=Qt.AlignmentFlag.AlignCenter)
+            self.player4HandLabel = QLabel("Player 4's Hand")
+            self.player4HandLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.layout.addWidget(self.player4HandLabel, 5, 9, alignment=Qt.AlignmentFlag.AlignCenter)
+            self.layout.addLayout(self.player4HandLayout, 5, 10, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.setLayout(self.layout)
 
-    def updateHandButtons(self, hand, layout, isPlayer):
+    def updateHandButtons(self, hand, layout, isPlayer, rotate):
         while layout.count():
             item = layout.takeAt(0)
             widget = item.widget()
@@ -703,13 +725,26 @@ class GameView(QWidget):
         self.controller.playCardButtons = []
         for idx, card in enumerate(hand):
             button = QLabel()
-            button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
+            if rotate:
+                button.setFixedSize(BUTTON_HEIGHT, BUTTON_WIDTH)
+            else:
+                button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
             button.setStyleSheet("border: 0px solid black; background-color: transparent;")
             if not card[3] and isPlayer: 
                 pixmap = QPixmap(fr"_internal\palaceData\cards\{card[0].lower()}_of_{card[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                if rotate:
+                    transform = QTransform().rotate(90)
+                    pixmap = pixmap.transformed(transform, Qt.TransformationMode.SmoothTransformation).scaled(CARD_HEIGHT, CARD_WIDTH, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                else:
+                    pixmap = pixmap.scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 button.setPixmap(pixmap)
             else:
                 pixmap = QPixmap(r"_internal\palaceData\cards\back.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                if rotate:
+                    transform = QTransform().rotate(90)
+                    pixmap = pixmap.transformed(transform, Qt.TransformationMode.SmoothTransformation).scaled(CARD_HEIGHT, CARD_WIDTH, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                else:
+                    pixmap = pixmap.scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 button.setPixmap(pixmap)
             button.setAlignment(Qt.AlignmentFlag.AlignCenter)
             if self.controller.topCardSelectionPhase:
@@ -735,10 +770,10 @@ class GameView(QWidget):
         self.updateOpponentBottomCardButtons(bottomCards)
     
     def updatePlayerHandButtons(self, hand):
-        self.updateHandButtons(hand, self.playerHandLayout, True)
+        self.updateHandButtons(hand, self.playerHandLayout, True, False)
     
     def updateOpponentHandButtons(self, hand):
-        self.updateHandButtons(hand, self.opponentHandLayout, False)
+        self.updateHandButtons(hand, self.opponentHandLayout, False, False)
 
     def updatePlayerTopCardButtons(self, topCards):
         for i in reversed(range(self.topCardsLayout.count())):
@@ -1066,7 +1101,7 @@ class GameController(QObject):
         self.startGameLoop()
 
     def createDeck(self):
-        suits = ['clubs', 'spades']
+        suits = ['clubs', 'spades', 'hearts', 'diamonds']
         return [(rank, suit, False, False) for rank in RANKS for suit in suits]
 
     def dealInitialCards(self, player):
