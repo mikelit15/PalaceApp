@@ -337,6 +337,9 @@ class JoinLobby(QDialog):
                     self.logText.append(logMessage)
         except ConnectionResetError:
             self.logText.append("Connection was closed by the server.")
+            self.leaveButton.setVisible(False)
+            self.backButton.setVisible(True)
+            self.joinButton.setDisabled(False)
         except Exception as e:
             self.logText.append(f"Error in listenForStartSignal: {e}")
 
@@ -371,7 +374,10 @@ class JoinLobby(QDialog):
 
     def backToOnlineDialog(self):
         if self.clientSocket:
-            self.clientSocket.sendall(b'leave')
+            try:
+                self.clientSocket.sendall(b'leave')
+            except (ConnectionResetError, BrokenPipeError):
+                pass
             self.clientSocket.close()
         self.accept()
         self.mainWindow.playOnline()
