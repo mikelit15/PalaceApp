@@ -157,7 +157,6 @@ class HostLobby(QDialog):
                     self.client_sockets.append(client_socket)
                     self.client_addresses[client_socket] = client_address
                     threading.Thread(target=self.handle_client, args=(client_socket,), daemon=True).start()
-                    threading.Thread(target=self.listen_for_disconnection, args=(client_socket,), daemon=True).start()
             except Exception as e:
                 if self.running:  # Only log if the server is supposed to be running
                     self.logText.append(f"Error accepting connections: {e}")
@@ -251,7 +250,6 @@ class JoinLobby(QDialog):
         self.main_window = main_window
         self.setWindowTitle("Join Lobby")
         self.setGeometry(0, 0, 300, 200)  # Default position, will be centered later
-        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
         self.client_socket = None
         self.initUI()
         
@@ -308,8 +306,6 @@ class JoinLobby(QDialog):
             threading.Thread(target=self.listen_for_start_signal, daemon=True).start()
             self.backButton.setVisible(False)
             self.leaveButton.setVisible(True)
-            self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
-            self.show()
         except OSError as e:
             if e.errno == 10049:
                 self.logText.append("Server does not exist.")
@@ -322,15 +318,9 @@ class JoinLobby(QDialog):
         try:
             while True:
                 self.joinButton.setDisabled(True)
-                try:
-                    data = self.client_socket.recv(1024).decode('utf-8')
-                except OSError as e:
-                    if e.errno == 10053:
-                        break
-                    else:
-                        raise e
+                data = self.client_socket.recv(1024).decode('utf-8')
                 if data.startswith('log:'):
-                    log_message = data[4:].strip()
+                    log_message = data[4:]  # Remove 'log:'
                     self.logText.append(log_message)
                 elif data == 'start':
                     self.startSignalReceived.emit()
@@ -362,10 +352,6 @@ class JoinLobby(QDialog):
         self.logText.append("Disconnected from server.")
         self.addressInput.setEnabled(True)
         self.nicknameInput.setEnabled(True)
-        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
-        self.show()
-        self.main_window.joinLobby(self)
-        self.accept()
 
     def backToOnlineDialog(self):
         if self.client_socket:
@@ -920,7 +906,6 @@ class GameView(QWidget):
         self.setWindowTitle(f'Palace Card Game - {self.playerType}')
         self.setWindowIcon(QIcon(r"_internal\palaceData\palace.ico"))
         self.setGeometry(450, 75, 900, 900)
-        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
 
         self.layout = QGridLayout()
 
