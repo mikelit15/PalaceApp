@@ -78,30 +78,29 @@ def centerDialog(dialog, parent, name):
         offset = 100
     elif name == "rulesDialog":
         offset = 225
-    parent_geo = parent.geometry()
-    parent_center_x = parent_geo.center().x()
-    parent_center_y = parent_geo.center().y()
-    dialog_geo = dialog.geometry()
-    dialog_center_x = dialog_geo.width() // 2
-    dialog_center_y = dialog_geo.height() // 2
-    new_x = parent_center_x - dialog_center_x
-    new_y = parent_center_y - dialog_center_y - offset
-    dialog.move(new_x, new_y)
+    parentGeometery = parent.geometry()
+    parentCenterX = parentGeometery.center().x()
+    parentCenterY = parentGeometery.center().y()
+    dialogGeometery = dialog.geometry()
+    dialogCenterX = dialogGeometery.width() // 2
+    dialogCenterY = dialogGeometery.height() // 2
+    newX = parentCenterX - dialogCenterX
+    newY = parentCenterY - dialogCenterY - offset
+    dialog.move(newX, newY)
 
 class HostLobby(QDialog):
-    def __init__(self, parent=None, main_window=None):
+    def __init__(self, parent=None, mainWindow=None):
         super().__init__(parent)
-        self.main_window = main_window
+        self.mainWindow = mainWindow
         self.setWindowTitle("Host Lobby")
         self.setGeometry(0, 0, 300, 200)
-        # self.setGeometry(835, 400, 300, 200)
-        self.server_socket = None
-        self.client_sockets = []
-        self.client_addresses = {}
-        self.client_nicknames = {}
-        self.server_thread = None
+        self.serverSocket = None
+        self.clientSockets = []
+        self.clientAddresses = {}
+        self.clientNicknames = {}
+        self.serverThread = None
         self.running = False
-        self.player_count = 1  # Starting with host player
+        self.playerCount = 1  # Starting with host player
         self.initUI()
 
     def initUI(self):
@@ -114,7 +113,7 @@ class HostLobby(QDialog):
         self.logText.setReadOnly(True)
         layout.addWidget(self.logText)
 
-        self.playerCountLabel = QLabel("Players: 1/4")
+        self.playerCountLabel = QLabel("Players: 1/2")
         layout.addWidget(self.playerCountLabel)
 
         self.startButton = QPushButton("Start Game")
@@ -130,110 +129,115 @@ class HostLobby(QDialog):
         self.startServer()
     
     def showEvent(self, event):
-        centerDialog(self, self.main_window, "Host Lobby")
+        centerDialog(self, self.mainWindow, "Host Lobby")
     
     def startServer(self):
         try:
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.bind(('127.0.0.1', 12345))  # Bind to the loopback address for local testing
-            self.server_socket.listen(5)
+            self.serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.serverSocket.bind(('127.0.0.1', 12345))  # Bind to the loopback address for local testing
+            self.serverSocket.listen(5)
             self.logText.append("Server started, waiting for connections...")
             self.logText.append("Host Connected")
             self.running = True
-            self.server_thread = threading.Thread(target=self.accept_connections, daemon=True)
-            self.server_thread.start()
-        except Exception as e:
-            self.logText.append(f"Failed to start server: {e}")
+            self.serverThread = threading.Thread(target=self.acceptConnections, daemon=True)
+            self.serverThread.start()
+        except OSError as e:
+            if e.errno == 10048:
+                self.logText.append("Server is already running")
+            else:
+                self.logText.append(f"Failed to start server: {e}")
 
-    def accept_connections(self):
+    def acceptConnections(self):
         while self.running:
             try:
-                client_socket, client_address = self.server_socket.accept()
-                if len(self.client_sockets) >= 3:
-                    client_socket.sendall(b'lobby full')
-                    client_socket.close()
-                    self.logText.append(f"Connection attempt from {client_address} - Lobby Full")
+                clientSocket, clientAddress = self.serverSocket.accept()
+                if len(self.clientSockets) >= 1:
+                    clientSocket.send(b'lobby full')
+                    self.logText.append(f"Connection attempt from {clientAddress}")
                 else:
-                    self.client_sockets.append(client_socket)
-                    self.client_addresses[client_socket] = client_address
-                    threading.Thread(target=self.handle_client, args=(client_socket,), daemon=True).start()
+                    self.clientSockets.append(clientSocket)
+                    self.clientAddresses[clientSocket] = clientAddress
+                    threading.Thread(target=self.handleClient, args=(clientSocket,), daemon=True).start()
+                    threading.Thread(target=self.listenForDisconnection, args=(clientSocket,), daemon=True).start()
             except Exception as e:
                 if self.running:  # Only log if the server is supposed to be running
                     self.logText.append(f"Error accepting connections: {e}")
 
-    def handle_client(self, client_socket):
+    def handleClient(self, clientSocket):
         try:
-            data = client_socket.recv(1024).decode('utf-8')
+            data = clientSocket.recv(1024).decode('utf-8')
             if data == "Player":
-                data = f"Player {self.player_count + 1}"
+                data = f"Player {self.playerCount + 1}"
             nickname = data
-            self.client_nicknames[client_socket] = nickname
-            self.player_count += 1
-            log_message = f"{nickname} connected from {self.client_addresses[client_socket]}"
-            self.logText.append(log_message)
-            self.send_log_to_clients(log_message)  # Send log message to all clients
-            self.playerCountLabel.setText(f"Players: {self.player_count}/4")
-            if self.player_count > 1:
+            self.clientNicknames[clientSocket] = nickname
+            self.playerCount += 1
+            logMessage = f"{nickname} connected from {self.clientAddresses[clientSocket]}"
+            self.logText.append(logMessage)
+            self.sendLogToClients(logMessage)  # Send log message to all clients
+            self.playerCountLabel.setText(f"Players: {self.playerCount}/2")
+            if self.playerCount > 1:
                 self.startButton.setEnabled(True)
         except Exception as e:
             self.logText.append(f"Error handling client: {e}")
 
-    def send_log_to_clients(self, message):
-        for client_socket in self.client_sockets:
+    def sendLogToClients(self, message):
+        for clientSocket in self.clientSockets:
             try:
-                client_socket.sendall(f"log: {message}".encode('utf-8'))
+                clientSocket.sendall(f"log: {message}".encode('utf-8'))
             except Exception as e:
                 self.logText.append(f"Failed to send log to client: {e}")
 
-    def listen_for_disconnection(self, client_socket):
+    def listenForDisconnection(self, clientSocket):
         try:
             while self.running:
-                data = client_socket.recv(1024).decode('utf-8')
+                data = clientSocket.recv(1024).decode('utf-8')
                 if data == 'leave':
-                    self.remove_client(client_socket)
+                    self.removeClient(clientSocket)
                     break
         except Exception as e:
-            self.remove_client(client_socket)
+            self.removeClient(clientSocket)
 
-    def remove_client(self, client_socket):
-        nickname = self.client_nicknames.pop(client_socket, "Unknown")
-        if client_socket in self.client_sockets:
-            self.client_sockets.remove(client_socket)
-            self.client_addresses.pop(client_socket, None)
-            self.player_count -= 1
-            self.logText.append(f"{nickname} has left the server.")
-            self.playerCountLabel.setText(f"Players: {self.player_count}/4")
-            client_socket.close()
-            if self.player_count <= 1:
+    def removeClient(self, clientSocket):
+        nickname = self.clientNicknames.pop(clientSocket, "Unknown")
+        if clientSocket in self.clientSockets:
+            self.clientSockets.remove(clientSocket)
+            self.clientAddresses.pop(clientSocket, None)
+            self.playerCount -= 1
+            message = f"{nickname} has left the server."
+            self.logText.append(message)
+            self.sendLogToClients(message)  # Send the disconnection message to all clients
+            self.playerCountLabel.setText(f"Players: {self.playerCount}/2")
+            clientSocket.close()
+            if self.playerCount <= 1:
                 self.startButton.setEnabled(False)
 
     def startGame(self):
         self.logText.append("Starting game...")
-        self.notify_clients_to_start()
+        self.notifyClientsToStart()
         self.accept()  # Close the lobby window
-        self.main_window.startHost()
+        self.mainWindow.startHost()
 
-    def notify_clients_to_start(self):
-        for client_socket in self.client_sockets:
+    def notifyClientsToStart(self):
+        for clientSocket in self.clientSockets:
             try:
-                client_socket.sendall(b'start')
+                clientSocket.sendall(b'start')
             except Exception as e:
                 self.logText.append(f"Failed to notify client: {e}")
     
     def backToOnlineDialog(self):
         self.running = False
-        if self.server_socket:
-            self.server_socket.close()
-        for client_socket in self.client_sockets:
-            client_socket.close()
+        if self.serverSocket:
+            self.serverSocket.close()
+        for clientSocket in self.clientSockets:
+            clientSocket.close()
         self.accept()
-        self.main_window.playOnline()
+        self.mainWindow.playOnline()
         
     def cleanup(self):
-        if self.server_socket:
-            self.server_socket.close()
-        for client_socket in self.client_sockets:
-            client_socket.close()
+        if self.serverSocket:
+            self.serverSocket.close()
+        for clientSocket in self.clientSockets:
+            clientSocket.close()
         self.running = False
 
     def closeEvent(self, event):
@@ -245,12 +249,13 @@ class JoinLobby(QDialog):
     startSignalReceived = pyqtSignal()
     lobbyFullSignal = pyqtSignal()
 
-    def __init__(self, parent=None, main_window=None):
+    def __init__(self, parent=None, mainWindow=None):
         super().__init__(parent)
-        self.main_window = main_window
+        self.mainWindow = mainWindow
         self.setWindowTitle("Join Lobby")
         self.setGeometry(0, 0, 300, 200)  # Default position, will be centered later
-        self.client_socket = None
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
+        self.clientSocket = None
         self.initUI()
         
         # Connect signals to slots
@@ -293,19 +298,21 @@ class JoinLobby(QDialog):
         self.setLayout(layout)
     
     def showEvent(self, event):
-        centerDialog(self, self.main_window, "JoinLobby")
+        centerDialog(self, self.mainWindow, "JoinLobby")
 
     def joinLobby(self):
-        host_address = self.addressInput.text()
+        hostAddress = self.addressInput.text()
         nickname = self.nicknameInput.text() or "Player"
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.clientSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            self.client_socket.connect((host_address, 12345))
-            self.client_socket.sendall(nickname.encode('utf-8'))
+            self.clientSocket.connect((hostAddress, 12345))
+            self.clientSocket.sendall(nickname.encode('utf-8'))
             self.connectionEstablished.emit() 
-            threading.Thread(target=self.listen_for_start_signal, daemon=True).start()
+            threading.Thread(target=self.listenForStartSignal, daemon=True).start()
             self.backButton.setVisible(False)
             self.leaveButton.setVisible(True)
+            self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+            self.show()
         except OSError as e:
             if e.errno == 10049:
                 self.logText.append("Server does not exist.")
@@ -314,59 +321,68 @@ class JoinLobby(QDialog):
             else:
                 self.logText.append(f"Failed to connect: {e}")
 
-    def listen_for_start_signal(self):
+    def listenForStartSignal(self):
         try:
             while True:
                 self.joinButton.setDisabled(True)
-                data = self.client_socket.recv(1024).decode('utf-8')
-                if data.startswith('log:'):
-                    log_message = data[4:]  # Remove 'log:'
-                    self.logText.append(log_message)
-                elif data == 'start':
+                data = self.clientSocket.recv(1024).decode('utf-8')
+                if data == 'start':
                     self.startSignalReceived.emit()
                     break
                 elif data == 'lobby full':
                     self.lobbyFullSignal.emit()
                     break
+                elif data.startswith('log:'):
+                    logMessage = data[4:].strip()
+                    self.logText.append(logMessage)
+        except ConnectionResetError:
+            self.logText.append("Connection was closed by the server.")
         except Exception as e:
-            print(f"Error in listen_for_start_signal: {e}")
+            self.logText.append(f"Error in listenForStartSignal: {e}")
 
     def onConnectionEstablished(self):
         self.logText.append(f"Connected to lobby")
         
     def onStartSignalReceived(self):
         self.accept() 
-        self.main_window.startClient()
+        self.mainWindow.startClient()
 
     def onLobbyFull(self):
-        self.logText.append("Lobby is full. Unable to join.")
-        self.client_socket.close()
+        self.logText.append("Lobby is full. Unable to join.\n")
+        self.leaveButton.setVisible(False)
+        self.backButton.setVisible(True)
+        self.joinButton.setDisabled(False)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
+        self.show()
 
     def leaveServer(self):
-        if self.client_socket:
-            self.client_socket.sendall(b'leave')
-            self.client_socket.close()
-        self.client_socket = None
+        if self.clientSocket:
+            self.clientSocket.sendall(b'leave')
+            self.clientSocket.close()
+        self.clientSocket = None
         self.leaveButton.setVisible(False)
-        self.joinButton.setVisible(True)
         self.logText.append("Disconnected from server.")
         self.addressInput.setEnabled(True)
         self.nicknameInput.setEnabled(True)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
+        self.show()
+        self.mainWindow.joinLobby(self)
+        self.accept()
 
     def backToOnlineDialog(self):
-        if self.client_socket:
-            self.client_socket.sendall(b'leave')
-            self.client_socket.close()
+        if self.clientSocket:
+            self.clientSocket.sendall(b'leave')
+            self.clientSocket.close()
         self.accept()
-        self.main_window.playOnline()
+        self.mainWindow.playOnline()
     
     def cleanup(self):
-        if self.client_socket:
+        if self.clientSocket:
             try:
-                self.client_socket.sendall(b'leave')
+                self.clientSocket.sendall(b'leave')
             except Exception:
                 pass
-            self.client_socket.close()
+            self.clientSocket.close()
 
     def closeEvent(self, event):
         self.cleanup()
@@ -906,6 +922,7 @@ class GameView(QWidget):
         self.setWindowTitle(f'Palace Card Game - {self.playerType}')
         self.setWindowIcon(QIcon(r"_internal\palaceData\palace.ico"))
         self.setGeometry(450, 75, 900, 900)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
 
         self.layout = QGridLayout()
 
@@ -1053,7 +1070,7 @@ class GameView(QWidget):
         self.setLayout(self.layout)
 
     def showEvent(self, event):
-        centerDialog(self, self.main_window, "GameView")
+        centerDialog(self, self, "GameView")
     
     def updateHandButtons(self, hand, layout, isPlayer, rotate):
         while layout.count():
