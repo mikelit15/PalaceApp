@@ -71,6 +71,14 @@ class SignalCommunicator(QObject):
     startGameSignal = pyqtSignal()
     proceedWithGameSetupSignal = pyqtSignal()
     updateUISignal = pyqtSignal()
+    resetGameSignal = pyqtSignal()
+    setupGameSignal = pyqtSignal()
+    logTextSignal = pyqtSignal(str)
+    playerCountLabelSignal = pyqtSignal(str)
+    startButtonEnabledSignal = pyqtSignal(bool)
+    playerConnectedSignal = pyqtSignal(str)
+    playerDisconnectedSignal = pyqtSignal(str)
+    connectionStatusSignal = pyqtSignal(str)
 
 def centerDialog(dialog, parent, name):
     offset = 0
@@ -101,6 +109,7 @@ class HostLobby(QDialog):
         self.serverThread = None
         self.running = False
         self.playerCount = 1  # Starting with host player
+        self.communicator = mainWindow.communicator  # Get the communicator from mainWindow
         self.initUI()
 
     def initUI(self):
@@ -136,16 +145,16 @@ class HostLobby(QDialog):
             self.serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.serverSocket.bind(('127.0.0.1', 12345))  # Bind to the loopback address for local testing
             self.serverSocket.listen(5)
-            self.logText.append("Server started, waiting for connections...")
-            self.logText.append("Host Connected")
+            self.communicator.logTextSignal.emit("Server started, waiting for connections...")
+            self.communicator.logTextSignal.emit("Host Connected")
             self.running = True
             self.serverThread = threading.Thread(target=self.acceptConnections, daemon=True)
             self.serverThread.start()
         except OSError as e:
             if e.errno == 10048:
-                self.logText.append("Server is already running")
+                self.communicator.logTextSignal.emit("Server is already running")
             else:
-                self.logText.append(f"Failed to start server: {e}")
+                self.communicator.logTextSignal.emit(f"Failed to start server: {e}")
 
     def acceptConnections(self):
         while self.running:
@@ -172,20 +181,20 @@ class HostLobby(QDialog):
             self.clientNicknames[clientSocket] = nickname
             self.playerCount += 1
             logMessage = f"{nickname} connected from {self.clientAddresses[clientSocket]}"
-            self.logText.append(logMessage)
+            self.communicator.playerConnectedSignal.emit(logMessage)
             self.sendLogToClients(logMessage)  # Send log message to all clients
-            self.playerCountLabel.setText(f"Players: {self.playerCount}/2")
+            self.communicator.playerCountLabelSignal.emit(f"Players: {self.playerCount}/2")
             if self.playerCount > 1:
-                self.startButton.setEnabled(True)
+                self.communicator.startButtonEnabledSignal.emit(True)
         except Exception as e:
-            self.logText.append(f"Error handling client: {e}")
+            self.communicator.logTextSignal.emit(f"Error handling client: {e}")
 
     def sendLogToClients(self, message):
         for clientSocket in self.clientSockets:
             try:
                 clientSocket.sendall(f"log: {message}".encode('utf-8'))
             except Exception as e:
-                self.logText.append(f"Failed to send log to client: {e}")
+                self.communicator.logTextSignal.emit(f"Failed to send log to client: {e}")
 
     def listenForDisconnection(self, clientSocket):
         try:
@@ -204,12 +213,12 @@ class HostLobby(QDialog):
             self.clientAddresses.pop(clientSocket, None)
             self.playerCount -= 1
             message = f"{nickname} has left the server."
-            self.logText.append(message)
+            self.communicator.playerDisconnectedSignal.emit(message)
             self.sendLogToClients(message)  # Send the disconnection message to all clients
-            self.playerCountLabel.setText(f"Players: {self.playerCount}/2")
+            self.communicator.playerCountLabelSignal.emit(f"Players: {self.playerCount}/2")
             clientSocket.close()
             if self.playerCount <= 1:
-                self.startButton.setEnabled(False)
+                self.communicator.startButtonEnabledSignal.emit(False)
 
     def startGame(self):
         self.logText.append("Starting game...")
@@ -256,6 +265,7 @@ class JoinLobby(QDialog):
         self.setGeometry(0, 0, 300, 200)  # Default position, will be centered later
         self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
         self.clientSocket = None
+        self.communicator = mainWindow.communicator  # Get the communicator from mainWindow
         self.initUI()
         
         # Connect signals to slots
@@ -315,11 +325,11 @@ class JoinLobby(QDialog):
             self.show()
         except OSError as e:
             if e.errno == 10049:
-                self.logText.append("Server does not exist.")
+                self.communicator.connectionStatusSignal.emit("Server does not exist.")
             elif e.errno == 10061:
-                self.logText.append("Server is not running.")
+                self.communicator.connectionStatusSignal.emit("Server is not running.")
             else:
-                self.logText.append(f"Failed to connect: {e}")
+                self.communicator.connectionStatusSignal.emit(f"Failed to connect: {e}")
 
     def listenForStartSignal(self):
         try:
@@ -334,24 +344,24 @@ class JoinLobby(QDialog):
                     break
                 elif data.startswith('log:'):
                     logMessage = data[4:].strip()
-                    self.logText.append(logMessage)
+                    self.communicator.logTextSignal.emit(logMessage)
         except ConnectionResetError:
-            self.logText.append("Connection was closed by the server.")
+            self.communicator.connectionStatusSignal.emit("Connection was closed by the server.")
             self.leaveButton.setVisible(False)
             self.backButton.setVisible(True)
             self.joinButton.setDisabled(False)
         except Exception as e:
-            self.logText.append(f"Error in listenForStartSignal: {e}")
+            self.communicator.connectionStatusSignal.emit(f"Error in listenForStartSignal: {e}")
 
     def onConnectionEstablished(self):
-        self.logText.append(f"Connected to lobby")
+        self.communicator.connectionStatusSignal.emit(f"Connected to lobby")
         
     def onStartSignalReceived(self):
         self.accept() 
         self.mainWindow.startClient()
 
     def onLobbyFull(self):
-        self.logText.append("Lobby is full. Unable to join.\n")
+        self.communicator.connectionStatusSignal.emit("Lobby is full. Unable to join.\n")
         self.leaveButton.setVisible(False)
         self.backButton.setVisible(True)
         self.joinButton.setDisabled(False)
@@ -364,7 +374,7 @@ class JoinLobby(QDialog):
             self.clientSocket.close()
         self.clientSocket = None
         self.leaveButton.setVisible(False)
-        self.logText.append("Disconnected from server.")
+        self.communicator.connectionStatusSignal.emit("Disconnected from server.")
         self.addressInput.setEnabled(True)
         self.nicknameInput.setEnabled(True)
         self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
@@ -403,9 +413,9 @@ class Server:
         self.serverSocket.bind((self.host, self.port))
         self.serverSocket.listen(1)
         self.controller = None 
-        print(f"Server listening on {self.host}:{self.port}\n")
+        self.communicator.logTextSignal.emit(f"Server listening on {self.host}:{self.port}\n")
         self.clientSocket, self.clientAddress = self.serverSocket.accept()
-        print(f"Connection from {self.clientAddress}\n")
+        self.communicator.logTextSignal.emit(f"Connection from {self.clientAddress}\n")
 
         # Start a thread to handle client communication
         threading.Thread(target=self.handleClient).start()
@@ -416,15 +426,11 @@ class Server:
                 data = self.receiveData(self.clientSocket)
                 if data:
                     self.processClientData(data)
-            except ConnectionResetError:
-                print("Connection reset by client\n")
-                break
-            except ConnectionAbortedError:
-                print("Connection aborted by client\n")
+            except (ConnectionResetError, ConnectionAbortedError, OSError) as e:
+                self.communicator.logTextSignal.emit(f"Connection error: {e}\n")
                 break
             except Exception as e:
-                print(f"Unexpected error: {e}\n")
-                break
+                self.communicator.logTextSignal.emit(f"Unexpected error: {e}\n")
         self.clientSocket.close()
 
     def processClientData(self, data):
@@ -441,12 +447,14 @@ class Server:
         elif data['action'] == 'playCard':
             self.controller.receiveGameState(data)
         elif data['action'] == 'playAgainRequest':
+            self.controller.playAgainCount = data['count']
             self.controller.handlePlayAgain()
         elif data['action'] == 'resetGame':
             self.controller.resetGame()
-            self.controller.setupGame()
         elif data['action'] == 'gameOver':
             self.controller.gameOverSignal.emit(data['winner'])
+        elif data['action'] == 'disconnect':
+            self.controller.disconnectSignal.emit()
 
     def sendToClient(self, data):
         if self.clientSocket:
@@ -483,6 +491,10 @@ class Server:
 
     def close(self):
         if self.clientSocket:
+            try:
+                self.clientSocket.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
             self.clientSocket.close()
         if self.serverSocket:
             self.serverSocket.close()
@@ -496,10 +508,10 @@ class Client:
         self.controller = None 
         try:
             self.clientSocket.connect((self.host, self.port))
-            print("Connected to the server\n")
+            self.communicator.logTextSignal.emit("Connected to the server\n")
             threading.Thread(target=self.handleServer).start()
         except Exception as e:
-            print(f"Failed to connect to the server: {e}\n")
+            self.communicator.logTextSignal.emit(f"Failed to connect to the server: {e}\n")
             self.clientSocket = None  
 
     def handleServer(self):
@@ -509,22 +521,19 @@ class Client:
                 if data:
                     self.processServerData(data)
                 else:
-                    print("No data received in handleServer\n")
-            except ConnectionResetError:
-                print("Connection reset by server\n")
-                break
-            except ConnectionAbortedError:
-                print("Connection aborted by server\n")
+                    self.communicator.logTextSignal.emit("No data received in handleServer\n")
+            except (ConnectionResetError, ConnectionAbortedError, OSError) as e:
+                self.communicator.logTextSignal.emit(f"Connection error: {e}\n")
                 break
             except Exception as e:
-                print(f"Unexpected error: {e}\n")
-                break
+                self.communicator.logTextSignal.emit(f"Unexpected error: {e}\n")
         if self.clientSocket:
             self.clientSocket.close()
 
+
     def processServerData(self, data):
         if data is None:
-            print("Received None data from server\n")
+            self.communicator.logTextSignal.emit("Received None data from server\n")
             return
         if data['action'] == 'confirmTopCards':
             playerIndex = int(data['playerIndex'])
@@ -539,12 +548,14 @@ class Client:
         elif data['action'] == 'playCard':
             self.controller.receiveGameState(data)
         elif data['action'] == 'playAgainRequest':
+            self.controller.playAgainCount = data['count']
             self.controller.handlePlayAgain()
         elif data['action'] == 'resetGame':
             self.controller.resetGame()
-            self.controller.setupGame()
         elif data['action'] == 'gameOver':
             self.controller.gameOverSignal.emit(data['winner'])
+        elif data['action'] == 'disconnect':
+            self.controller.disconnectSignal.emit()
 
     def sendToServer(self, data):
         if self.clientSocket:
@@ -580,7 +591,11 @@ class Client:
         return data
 
     def close(self):
-        if self.clientSocket: 
+        if self.clientSocket:
+            try:
+                self.clientSocket.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
             self.clientSocket.close()
             self.clientSocket = None
 
@@ -635,6 +650,12 @@ class HomeScreen(QWidget):
         self.communicator = communicator
         self.controller = None
         self.initUI()
+        self.communicator.logTextSignal.connect(self.updateLogText)
+        self.communicator.playerCountLabelSignal.connect(self.updatePlayerCountLabel)
+        self.communicator.startButtonEnabledSignal.connect(self.setStartButtonEnabled)
+        self.communicator.playerConnectedSignal.connect(self.updateLogText)
+        self.communicator.playerDisconnectedSignal.connect(self.updateLogText)
+        self.communicator.connectionStatusSignal.connect(self.updateLogText)
 
     def initUI(self):
         self.setWindowTitle('Palace')
@@ -763,8 +784,7 @@ class HomeScreen(QWidget):
             self.hide()
             difficultyMap = {1: 'easy', 2: 'medium', 3: 'hard'}
             difficultyLevel = difficultyMap.get(difficulty, 'medium')
-            self.controller = GameController(numPlayers, difficultyLevel)  # Start game with selected number of players and difficulty level
-            self.controller.mainMenuRequested.connect(self.returnToMainMenu)
+            self.controller = GameController(numPlayers, difficultyLevel, self.geometry())  # Pass the geometry
             self.controller.view.show()
 
     def playOnline(self):
@@ -807,17 +827,15 @@ class HomeScreen(QWidget):
     def startHost(self):
         self.hide()
         self.server = Server('localhost', 5555, self.communicator)
-        self.controller = GameController(numPlayers=2, difficulty='medium', connection=self.server, isHost=True)  # 2 players for online
-        self.server.controller = self.controller 
-        self.controller.mainMenuRequested.connect(self.returnToMainMenu)
+        self.controller = GameController(numPlayers=2, difficulty='medium', parentCoord=self, connection=self.server, isHost=True)  # Pass the parent
+        self.server.controller = self.controller
         self.controller.view.show()
-    
+
     def startClient(self):
         self.hide()
-        self.client = Client('localhost', 5555, self.communicator) 
-        self.controller = GameController(numPlayers=2, difficulty='medium', connection=self.client, isHost=False)  # 2 players for online
-        self.client.controller = self.controller 
-        self.controller.mainMenuRequested.connect(self.returnToMainMenu)
+        self.client = Client('localhost', 5555, self.communicator)
+        self.controller = GameController(numPlayers=2, difficulty='medium', parentCoord=self, connection=self.client, isHost=False)  # Pass the parent
+        self.client.controller = self.controller
         self.controller.view.show()
     
     def showRules(self):
@@ -888,6 +906,20 @@ class HomeScreen(QWidget):
         centerDialog(self.rulesDialog, self, "rulesDialog")
         self.rulesDialog.exec()
 
+    def updateLogText(self, message):
+        if hasattr(self, 'hostLobbyDialog') and self.hostLobbyDialog:
+            self.hostLobbyDialog.logText.append(message)
+        if hasattr(self, 'joinLobbyDialog') and self.joinLobbyDialog:
+            self.joinLobbyDialog.logText.append(message)
+    
+    def updatePlayerCountLabel(self, text):
+        if hasattr(self, 'hostLobbyDialog') and self.hostLobbyDialog:
+            self.hostLobbyDialog.playerCountLabel.setText(text)
+    
+    def setStartButtonEnabled(self, enabled):
+        if hasattr(self, 'hostLobbyDialog') and self.hostLobbyDialog:
+            self.hostLobbyDialog.startButton.setEnabled(enabled)
+    
 class Player:
     def __init__(self, name):
         self.name = name
@@ -912,8 +944,8 @@ class Player:
         pile.clear()
 
 class GameView(QWidget):
-    def __init__(self, controller, playerType, communicator, parent=None):
-        super().__init__(parent)
+    def __init__(self, controller, playerType, communicator, parentCoord):
+        super().__init__()
         self.controller = controller
         self.playerType = playerType
         self.communicator = communicator
@@ -923,6 +955,10 @@ class GameView(QWidget):
         self.communicator.updateOpponentBottomCardsSignal.connect(self.updateOpponentBottomCards)
         self.communicator.updateOpponentTopCardsSignal.connect(self.updateOpponentTopCards)
         self.communicator.updateOpponentHandSignal.connect(self.updateOpponentHand)
+        self.communicator.resetGameSignal.connect(self.handleResetGame)
+
+        # Use the centerDialog function to position the window
+        centerDialog(self, parentCoord, "GameView")
         
     def initUI(self):
         self.setWindowTitle(f'Palace Card Game - {self.playerType}')
@@ -932,6 +968,13 @@ class GameView(QWidget):
 
         self.layout = QGridLayout()
 
+        # Disconnect Button (row 0, column 0)
+        self.disconnectButton = QPushButton("Disconnect")
+        self.disconnectButton.setFixedWidth(125)
+        self.disconnectButton.setFixedHeight(25)
+        self.disconnectButton.clicked.connect(self.disconnect)
+        self.layout.addWidget(self.disconnectButton, 2, 0)
+        
         # Opponent Hand (row 0, column 5)
         self.opponentHandContainer = QWidget()
         self.opponentHandContainer.setMaximumWidth(500)  # Set maximum width here
@@ -1078,6 +1121,9 @@ class GameView(QWidget):
     def showEvent(self, event):
         centerDialog(self, self, "GameView")
     
+    def handleResetGame(self):
+        self.clearSelectionLayout()
+    
     def updateHandButtons(self, hand, layout, isPlayer, rotate):
         while layout.count():
             item = layout.takeAt(0)
@@ -1092,30 +1138,31 @@ class GameView(QWidget):
             else:
                 button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
             button.setStyleSheet("border: 0px solid black; background-color: transparent;")
-            if not card[3] and isPlayer:
-                pixmap = QPixmap(fr"_internal\palaceData\cards\{card[0].lower()}_of_{card[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                if rotate:
-                    transform = QTransform().rotate(90)
-                    pixmap = pixmap.transformed(transform, Qt.TransformationMode.SmoothTransformation).scaled(CARD_HEIGHT, CARD_WIDTH, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            if not card[0] == "":
+                if not card[3] and isPlayer:
+                    pixmap = QPixmap(fr"_internal\palaceData\cards\{card[0].lower()}_of_{card[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    if rotate:
+                        transform = QTransform().rotate(90)
+                        pixmap = pixmap.transformed(transform, Qt.TransformationMode.SmoothTransformation).scaled(CARD_HEIGHT, CARD_WIDTH, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    else:
+                        pixmap = pixmap.scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    button.setPixmap(pixmap)
                 else:
-                    pixmap = pixmap.scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                button.setPixmap(pixmap)
-            else:
-                pixmap = QPixmap(r"_internal\palaceData\cards\back.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                if rotate:
-                    transform = QTransform().rotate(90)
-                    pixmap = pixmap.transformed(transform, Qt.TransformationMode.SmoothTransformation).scaled(CARD_HEIGHT, CARD_WIDTH, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    pixmap = QPixmap(r"_internal\palaceData\cards\back.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    if rotate:
+                        transform = QTransform().rotate(90)
+                        pixmap = pixmap.transformed(transform, Qt.TransformationMode.SmoothTransformation).scaled(CARD_HEIGHT, CARD_WIDTH, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    else:
+                        pixmap = pixmap.scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    button.setPixmap(pixmap)
+                button.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                if self.controller.topCardSelectionPhase:
+                    button.mousePressEvent = lambda event, idx=idx, btn=button: self.selectTopCard(idx, btn)
                 else:
-                    pixmap = pixmap.scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                button.setPixmap(pixmap)
-            button.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            if self.controller.topCardSelectionPhase:
-                button.mousePressEvent = lambda event, idx=idx, btn=button: self.selectTopCard(idx, btn)
-            else:
-                try:
-                    button.mousePressEvent = lambda event, idx=idx, btn=button: self.controller.prepareCardPlacement(idx, btn)
-                except IndexError:
-                    return
+                    try:
+                        button.mousePressEvent = lambda event, idx=idx, btn=button: self.controller.prepareCardPlacement(idx, btn)
+                    except IndexError:
+                        return
             self.controller.playCardButtons.append(button)
             layout.addWidget(button)
 
@@ -1251,7 +1298,6 @@ class GameView(QWidget):
     def updateUI(self, currentPlayer, deckSize, pile):
         self.enableOpponentHandNotClickable()
         if self.controller.topCardSelectionPhase:
-            self.currentPlayerLabel.setText(f"Select your 3 Top cards...")
             self.confirmButton.setEnabled(len(self.chosenCards) == 3)
         else:
             self.confirmButton.setVisible(False)
@@ -1304,8 +1350,15 @@ class GameView(QWidget):
     def clearSelectionLayout(self):
         self.chosenCards = []
         self.cardButtons = []
-        self.confirmButton.setEnabled(False)
-        self.placeButton.setEnabled(False)
+        self.pile = []
+        self.topCardSelectionPhase = True
+        self.pileLabel.setText("\t     Select your 3 Top cards...")
+        self.pileLabel.setFixedWidth(200)
+        self.deckLabel.setVisible(False)
+        self.currentPlayerLabel.setVisible(False)
+        self.pickUpPileButton.setVisible(False)
+        self.placeButton.setVisible(False)
+        self.confirmButton.setVisible(True)
         
         # Clear player hand layout
         while self.playerHandLayout.count():
@@ -1376,17 +1429,19 @@ class GameView(QWidget):
                 widget.setEnabled(True)
                 widget.mousePressEvent = lambda event: None 
 
+    def disconnect(self):
+        self.controller.disconnect()
+        self.close()
+        self.controller.returnToMainMenu()
+        
     def closeEvent(self, event):
         self.controller.closeConnections()
         event.accept()
     
 class GameController(QObject):
-    playAgainRequested = pyqtSignal()
-    mainMenuRequested = pyqtSignal()
-    exitRequested = pyqtSignal()
     gameOverSignal = pyqtSignal(str)
 
-    def __init__(self, numPlayers, difficulty, connection=None, isHost=False):
+    def __init__(self, numPlayers, difficulty, parentCoord, connection=None, isHost=False):
         super().__init__()
         self.numPlayers = numPlayers
         self.difficulty = difficulty
@@ -1397,12 +1452,16 @@ class GameController(QObject):
             self.communicator = connection.communicator
         self.communicator.startGameSignal.connect(self.proceedWithGameSetup)
         self.communicator.proceedWithGameSetupSignal.connect(self.proceedWithGameSetupOnMainThread)
-        self.communicator.updateUISignal.connect(self.updateUI) 
+        self.communicator.updateUISignal.connect(self.updateUI)
+        self.communicator.updateDeckSignal.connect(self.receiveDeckFromServer)
+        self.gameOverSignal.connect(self.stopTimer)
+        self.gameOverSignal.connect(self.showGameOverDialog)
+        self.communicator.setupGameSignal.connect(self.setupGame)
         if isHost:
-            self.playerType = "Player 1" 
+            self.playerType = "Player 1"
         else:
             self.playerType = "Player 2"
-        self.view = GameView(self, self.playerType, self.communicator)
+        self.view = GameView(self, self.playerType, self.communicator, parentCoord)
         self.players = [Player("Player 1"), Player("Player 2")]
         self.sevenSwitch = False
         self.deck = []
@@ -1412,56 +1471,57 @@ class GameController(QObject):
         self.playCardButtons = []
         self.topCardSelectionPhase = True
         self.connection = connection
-        self.setupGame()
-        self.gameOver = False
-
-        self.communicator.updateDeckSignal.connect(self.receiveDeckFromServer)
-    
-        self.playAgainRequested.connect(self.handlePlayAgain)
-        self.mainMenuRequested.connect(self.handleMainMenu)
-        self.exitRequested.connect(QCoreApplication.instance().quit)
+        self.gameOver = False    
         self.playAgainCount = 0
-        
-        self.gameOverSignal.connect(self.stopTimer)
-        self.gameOverSignal.connect(self.showGameOverDialog)
-    
+        self.setupGame()
+
+        # Track threads for cleanup
+        self.threads = []
+
     def showGameOverDialog(self, winnerName):
         dialog = GameOverDialog(winnerName, self.view)
         dialog.playAgainSignal.connect(self.requestPlayAgain)
-        dialog.mainMenuSignal.connect(self.mainMenuRequested)
-        dialog.exitSignal.connect(self.exitRequested)
+        dialog.mainMenuSignal.connect(self.returnToMainMenu)
+        dialog.exitSignal.connect(self.exitGame)
         dialog.exec()
 
+    def returnToMainMenu(self):
+        self.communicator = SignalCommunicator()
+        homeScreen = HomeScreen(self.communicator)
+        homeScreen.show()
+        # self.closeThreads()
+        # self.closeConnections()
+        # self.view.close()
+    
+    def exitGame(self):
+        QCoreApplication.instance().quit
+    
+    def notifyReset(self):
+        data = {'action': 'resetGame'}
+        self.connection.sendToClient(data)
+    
     def requestPlayAgain(self):
-        self.playAgainCount += 1
         if self.playAgainCount == 2:
-            self.playAgainCount = 0
-            self.resetGame()
-            self.setupGame()
-            self.notifyReset()
+            self.handlePlayAgain()
         else:
-            data = {'action': 'playAgainRequest'}
+            self.playAgainCount += 1
             if self.isHost:
+                data = {'action': 'playAgainRequest', 
+                        'count' : self.playAgainCount}
                 self.connection.sendToClient(data)
             else:
+                data = {'action': 'playAgainRequest', 
+                        'count' : self.playAgainCount}
                 self.connection.sendToServer(data)
 
     def handlePlayAgain(self):
-        self.playAgainCount += 1
-        if self.playAgainCount == 2:
-            self.playAgainCount = 0
+        if self.playAgainCount == 2 and self.isHost:
             self.resetGame()
-            self.setupGame()
             self.notifyReset()
-        elif not self.isHost:
-            data = {'action': 'playAgainRequest'}
-            self.connection.sendToServer(data)
-
-    def notifyReset(self):
-        data = {'action': 'resetGame'}
-        if self.isHost:
-            self.connection.sendToClient(data)
-        else:
+            self.communicator.setupGameSignal.emit()
+        elif self.playAgainCount == 2:
+            data = {'action': 'playAgainRequest', 
+                    'count' : self.playAgainCount}
             self.connection.sendToServer(data)
 
     def resetGame(self):
@@ -1473,15 +1533,13 @@ class GameController(QObject):
         self.topCardSelectionPhase = True
         self.players = [Player("Player 1"), Player("Player 2")]
         self.view.clearSelectionLayout()
-
-    def handleMainMenu(self):
-        self.closeConnections()
-        self.view.close()
-        self.mainMenuRequested.emit()
+        self.communicator.resetGameSignal.emit()
     
     def stopTimer(self):
         if hasattr(self, 'timer'):
             self.timer.stop()
+        currentPlayer = self.players[self.currentPlayerIndex]
+        self.view.updateUI(currentPlayer, len(self.deck), self.pile)
     
     def startGameLoop(self):
         self.timer = QTimer()
@@ -1489,8 +1547,9 @@ class GameController(QObject):
         self.timer.start(1000)  # Run the game loop every second
 
     def gameLoop(self):
-        currentPlayer = self.players[self.currentPlayerIndex]
-        self.view.updateUI(currentPlayer, len(self.deck), self.pile)
+        if not self.gameOver:
+            currentPlayer = self.players[self.currentPlayerIndex]
+            self.view.updateUI(currentPlayer, len(self.deck), self.pile)
 
     def pickUpPile(self):
         if not self.pile:
@@ -1587,10 +1646,11 @@ class GameController(QObject):
                 self.view.updateOpponentTopCardButtons(self.players[0].topCards)
                 self.view.updatePlayerBottomCardButtons(self.players[1].bottomCards)
                 self.view.updateOpponentBottomCardButtons(self.players[0].bottomCards)
-        if self.isSessionPlayer():
-            self.updatePlayableCards()
-        else:
-            self.view.disablePlayerHand()
+        if not self.gameOver:
+            if self.isSessionPlayer():
+                self.updatePlayableCards()
+            else:
+                self.view.disablePlayerHand()
 
     def prepareCardPlacement(self, cardIndex, cardLabel):
         card = self.players[self.currentPlayerIndex].hand[cardIndex]
@@ -1700,12 +1760,8 @@ class GameController(QObject):
             topCard = self.pile[-1]
             pixmap = QPixmap(fr"_internal/palaceData/cards/{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.view.pileLabel.setPixmap(pixmap)
-            self.updateUI()
             self.checkGameState()
-            if self.gameOver:
-                self.sendGameState()
-                self.gameOverSignal.emit(currentPlayer.name)
-                return
+            self.updateUI()
             self.sendGameState()
             self.pile.clear()
             self.updateUI()
@@ -1720,10 +1776,6 @@ class GameController(QObject):
             self.view.pileLabel.setPixmap(pixmap)
             self.updateUI()
             self.checkGameState()
-            if self.gameOver:
-                self.sendGameState()
-                self.gameOverSignal.emit(currentPlayer.name)
-                return
             self.sendGameState()
             self.view.placeButton.setText("Select A Card")
         elif '10' in [card[0] for card in playedCards]:
@@ -1731,12 +1783,8 @@ class GameController(QObject):
             topCard = self.pile[-1]
             pixmap = QPixmap(fr"_internal/palaceData/cards/{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.view.pileLabel.setPixmap(pixmap)
-            self.updateUI()
             self.checkGameState()
-            if self.gameOver:
-                self.sendGameState()
-                self.gameOverSignal.emit(currentPlayer.name)
-                return
+            self.updateUI()
             self.sendGameState()
             self.pile.clear()
             self.updateUI()
@@ -1751,15 +1799,16 @@ class GameController(QObject):
             topCard = self.pile[-1]
             pixmap = QPixmap(fr"_internal/palaceData/cards/{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.view.pileLabel.setPixmap(pixmap)
-            self.updateUI()
             self.checkGameState()
-            if self.gameOver:
-                self.sendGameState()
-                self.gameOverSignal.emit(currentPlayer.name)
-                return
-            self.changeTurn()
+            self.gameOver = True
+            self.updateUI()
+            if not self.gameOver:
+                self.changeTurn()
             self.sendGameState()
             self.view.placeButton.setText("Opponent's Turn...")
+        if self.gameOver:
+            time.sleep(3)
+            self.gameOverSignal.emit(currentPlayer.name)
 
     def changeTurn(self):
         self.currentPlayerIndex = (self.currentPlayerIndex + 1) % len(self.players)
@@ -1801,8 +1850,7 @@ class GameController(QObject):
                     self.view.updateOpponentHandButtons(currentPlayer.hand)
                     self.view.updateOpponentBottomCardButtons(currentPlayer.bottomCards)
             elif not currentPlayer.bottomCards:
-                placeholder = QLabel()
-                placeholder.setFixedSize(BUTTON_HEIGHT, BUTTON_WIDTH)
+                placeholder = ("", "", False, False)
                 currentPlayer.hand.append(placeholder)
                 self.view.pickUpPileButton.setDisabled(True)
                 self.view.placeButton.setDisabled(True)
@@ -1836,17 +1884,16 @@ class GameController(QObject):
         
     def sendGameState(self):
         if self.connection:
+            data = self.serializeGameState()
+            if isinstance(self.connection, Server):
+                self.connection.sendToClient(data)
+            else:
+                self.connection.sendToServer(data)
             if self.gameOver:
                 data = {
                     'action': 'gameOver',
                     'winner': self.players[self.currentPlayerIndex].name
                 }
-                if isinstance(self.connection, Server):
-                    self.connection.sendToClient(data)
-                else:
-                    self.connection.sendToServer(data)
-            else:
-                data = self.serializeGameState()
                 if isinstance(self.connection, Server):
                     self.connection.sendToClient(data)
                 else:
@@ -1896,6 +1943,27 @@ class GameController(QObject):
         self.players[1].topCards = data['players'][1]['topCards']
         self.players[1].bottomCards = data['players'][1]['bottomCards']
         self.communicator.updateUISignal.emit()
+    
+    def startHostServerThread(self):
+        thread = threading.Thread(target=self.connection.handleClient, daemon=True)
+        self.threads.append(thread)
+        thread.start()
+
+    def startClientServerThread(self):
+        thread = threading.Thread(target=self.connection.handleServer, daemon=True)
+        self.threads.append(thread)
+        thread.start()
+
+    def disconnect(self):
+        self.gameOver = True
+        self.closeThreads()
+        if self.connection:
+            self.connection.close()
+
+    def closeThreads(self):
+        for thread in self.threads:
+            if thread.is_alive():
+                thread.join(timeout=1)
     
     def closeConnections(self):
         if self.connection:
