@@ -113,7 +113,7 @@ class HostLobby(QDialog):
         self.logText.setReadOnly(True)
         layout.addWidget(self.logText)
 
-        self.playerCountLabel = QLabel("Players: 1/2")
+        self.playerCountLabel = QLabel("Players: 1/4")
         layout.addWidget(self.playerCountLabel)
 
         self.startButton = QPushButton("Start Game")
@@ -151,30 +151,31 @@ class HostLobby(QDialog):
         while self.running:
             try:
                 clientSocket, clientAddress = self.serverSocket.accept()
-                if len(self.clientSockets) >= 1:
+                if len(self.clientSockets) >= 3:
                     clientSocket.send(b'lobby full')
                     self.logText.append(f"Connection attempt from {clientAddress}")
                 else:
                     self.clientSockets.append(clientSocket)
                     self.clientAddresses[clientSocket] = clientAddress
-                    threading.Thread(target=self.handleClient, args=(clientSocket,), daemon=True).start()
+                    playerIndex = len(self.clientSockets)  # Assign unique index based on order of joining
+                    threading.Thread(target=self.handleClient, args=(clientSocket, playerIndex), daemon=True).start()
                     threading.Thread(target=self.listenForDisconnection, args=(clientSocket,), daemon=True).start()
             except Exception as e:
                 if self.running:  # Only log if the server is supposed to be running
                     self.logText.append(f"Error accepting connections: {e}")
 
-    def handleClient(self, clientSocket):
+    def handleClient(self, clientSocket, playerIndex):
         try:
             data = clientSocket.recv(1024).decode('utf-8')
             if data == "Player":
-                data = f"Player {self.playerCount + 1}"
+                data = f"Player {playerIndex + 1}"
             nickname = data
             self.clientNicknames[clientSocket] = nickname
             self.playerCount += 1
-            logMessage = f"{nickname} connected from {self.clientAddresses[clientSocket]}"
+            logMessage = f"{nickname} connected from {self.clientAddresses[clientSocket]} as Player {playerIndex + 1}"
             self.logText.append(logMessage)
             self.sendLogToClients(logMessage)  # Send log message to all clients
-            self.playerCountLabel.setText(f"Players: {self.playerCount}/2")
+            self.playerCountLabel.setText(f"Players: {self.playerCount}/4")
             if self.playerCount > 1:
                 self.startButton.setEnabled(True)
         except Exception as e:
@@ -206,7 +207,7 @@ class HostLobby(QDialog):
             message = f"{nickname} has left the server."
             self.logText.append(message)
             self.sendLogToClients(message)  # Send the disconnection message to all clients
-            self.playerCountLabel.setText(f"Players: {self.playerCount}/2")
+            self.playerCountLabel.setText(f"Players: {self.playerCount}/4")
             clientSocket.close()
             if self.playerCount <= 1:
                 self.startButton.setEnabled(False)
@@ -215,7 +216,7 @@ class HostLobby(QDialog):
         self.logText.append("Starting game...")
         self.notifyClientsToStart()
         self.accept()  # Close the lobby window
-        self.mainWindow.startHost()
+        self.mainWindow.startHost(self.clientSockets)  # Pass client sockets to the main window
 
     def notifyClientsToStart(self):
         for clientSocket in self.clientSockets:
@@ -396,18 +397,33 @@ class Server:
         self.serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.serverSocket.bind((self.host, self.port))
         self.serverSocket.listen(1)
-        self.controller = None 
+        self.controller = None
+        self.clientSockets = []  # Store client sockets
         print(f"Server listening on {self.host}:{self.port}\n")
-        self.clientSocket, self.clientAddress = self.serverSocket.accept()
-        print(f"Connection from {self.clientAddress}\n")
+        self.acceptThread = threading.Thread(target=self.acceptConnections, daemon=True)
+        self.acceptThread.start()
 
-        # Start a thread to handle client communication
-        threading.Thread(target=self.handleClient).start()
+    def acceptConnections(self):
+        while True:
+            clientSocket, clientAddress = self.serverSocket.accept()
+            self.clientSockets.append(clientSocket)
+            print(f"Connection from {clientAddress}\n")
+            threading.Thread(target=self.handleClient, args=(clientSocket,), daemon=True).start()
 
-    def handleClient(self):
+    def broadcastToClients(self, data):
+        serializedData = json.dumps(data).encode('utf-8')
+        msgLen = struct.pack('>I', len(serializedData))
+        for clientSocket in self.clientSockets:
+            try:
+                print(f"Sending data to client: {data}\n")
+                clientSocket.sendall(msgLen + serializedData)
+            except Exception as e:
+                print(f"Error broadcasting to client: {e}\n")
+
+    def handleClient(self, clientSocket):
         while True:
             try:
-                data = self.receiveData(self.clientSocket)
+                data = self.receiveData(clientSocket)
                 if data:
                     self.processClientData(data)
             except ConnectionResetError:
@@ -419,52 +435,18 @@ class Server:
             except Exception as e:
                 print(f"Unexpected error: {e}\n")
                 break
-        self.clientSocket.close()
+        clientSocket.close()
 
     def processClientData(self, data):
-        if data is None:
-            return
-        if data['action'] == 'confirmTopCards':
-            playerIndex = int(data['playerIndex'])
-            self.communicator.updateOpponentBottomCardsSignal.emit(playerIndex, data['bottomCards'])
-            self.communicator.updateOpponentTopCardsSignal.emit(playerIndex, data['topCards'])
-            self.communicator.updateOpponentHandSignal.emit(playerIndex, data['hand'])
-            self.controller.checkBothPlayersConfirmed()
-        elif data['action'] == 'startGame':
-            self.controller.proceedWithGameSetup()
-        elif data['action'] == 'playCard':
-            self.controller.receiveGameState(data)
-        elif data['action'] == 'playAgainRequest':
-            self.controller.handlePlayAgain()
-        elif data['action'] == 'resetGame':
-            self.controller.resetGame()
-            self.controller.setupGame()
-        elif data['action'] == 'gameOver':
-            self.controller.gameOverSignal.emit(data['winner'])
-
-    def sendToClient(self, data):
-        if self.clientSocket:
-            try:
-                serializedData = json.dumps(data).encode('utf-8')
-                msgLen = struct.pack('>I', len(serializedData))
-                print(f"Sending data to client: {data}\n")
-                self.clientSocket.sendall(msgLen + serializedData)
-            except Exception as e:
-                print(f"Error sending data to client: {e}\n")
-        else:
-            print("Client socket is not connected\n")
+        if data['action'] == 'playCard' or data['action'] == 'gameOver' or data['action'] == 'confirmTopCards' or data['action'] == 'startGame' or data['action'] == 'playAgainRequest' or data['action'] == 'resetGame':
+            self.broadcastToAll(data)
 
     def receiveData(self, sock):
         rawMsgLen = self.recvall(sock, 4)
         if not rawMsgLen:
             return None
         msglen = struct.unpack('>I', rawMsgLen)[0]
-        message = self.recvall(sock, msglen)
-        if message is None:
-            return None
-        data = json.loads(message)
-        print(f"Received data: {data}\n")
-        return data
+        return self.recvall(sock, msglen)
 
     def recvall(self, sock, n):
         data = b''
@@ -473,13 +455,41 @@ class Server:
             if not packet:
                 return None
             data += packet
+        print(f"Received data: {data}\n")
         return data
 
     def close(self):
-        if self.clientSocket:
-            self.clientSocket.close()
         if self.serverSocket:
             self.serverSocket.close()
+        for clientSocket in self.clientSockets:
+            clientSocket.close()
+
+    def broadcastToAll(self, data):
+        serializedData = json.dumps(data).encode('utf-8')
+        msgLen = struct.pack('>I', len(serializedData))
+        for clientSocket in self.clientSockets:
+            try:
+                print(f"Sending data to client: {serializedData}\n")
+                clientSocket.sendall(msgLen + serializedData)
+            except Exception as e:
+                print(f"Error broadcasting to client: {e}\n")
+        # Also process the broadcast on the server side
+        self.processBroadcast(data)
+
+    def processBroadcast(self, data):
+        if data['action'] == 'playCard':
+            self.controller.receiveGameState(data)
+        elif data['action'] == 'gameOver':
+            self.controller.gameOverSignal.emit(data['winner'])
+        elif data['action'] == 'confirmTopCards':
+            self.controller.checkBothPlayersConfirmed()
+        elif data['action'] == 'startGame':
+            self.controller.proceedWithGameSetup()
+        elif data['action'] == 'playAgainRequest':
+            self.controller.handlePlayAgain()
+        elif data['action'] == 'resetGame':
+            self.controller.resetGame()
+            self.controller.setupGame()
 
 class Client:
     def __init__(self, host, port, communicator):
@@ -487,7 +497,7 @@ class Client:
         self.port = port
         self.communicator = communicator
         self.clientSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.controller = None 
+        self.controller = None
         try:
             self.clientSocket.connect((self.host, self.port))
             print("Connected to the server\n")
@@ -541,28 +551,14 @@ class Client:
             self.controller.gameOverSignal.emit(data['winner'])
 
     def sendToServer(self, data):
-        if self.clientSocket:
-            try:
-                serializedData = json.dumps(data).encode('utf-8')
-                msgLen = struct.pack('>I', len(serializedData))
-                print(f"Sending data to server: {data}\n")
-                self.clientSocket.sendall(msgLen + serializedData)
-            except Exception as e:
-                print(f"Error sending data to server: {e}\n")
-        else:
-            print("Client socket is not connected\n")
+        self.broadcastToAll(data)
 
     def receiveData(self, sock):
         rawMsgLen = self.recvall(sock, 4)
         if not rawMsgLen:
             return None
         msglen = struct.unpack('>I', rawMsgLen)[0]
-        message = self.recvall(sock, msglen)
-        if message is None:
-            return None
-        data = json.loads(message)
-        print(f"Received data: {data}\n")
-        return data
+        return self.recvall(sock, msglen)
 
     def recvall(self, sock, n):
         data = b''
@@ -571,12 +567,41 @@ class Client:
             if not packet:
                 return None
             data += packet
+        print(f"Received data: {data}\n")
         return data
 
     def close(self):
         if self.clientSocket: 
             self.clientSocket.close()
             self.clientSocket = None
+
+    def broadcastToAll(self, data):
+        serializedData = json.dumps(data).encode('utf-8')
+        msgLen = struct.pack('>I', len(serializedData))
+        # Send to the server
+        try:
+            print(f"Sending data to client: {serializedData}\n")
+            self.clientSocket.sendall(msgLen + serializedData)
+        except Exception as e:
+            print(f"Error sending data to server: {e}\n")
+        # Also send to other clients
+        self.controller.communicator.updateUISignal.emit()
+        self.processBroadcast(data)
+
+    def processBroadcast(self, data):
+        if data['action'] == 'playCard':
+            self.controller.receiveGameState(data)
+        elif data['action'] == 'gameOver':
+            self.controller.gameOverSignal.emit(data['winner'])
+        elif data['action'] == 'confirmTopCards':
+            self.controller.checkBothPlayersConfirmed()
+        elif data['action'] == 'startGame':
+            self.controller.proceedWithGameSetup()
+        elif data['action'] == 'playAgainRequest':
+            self.controller.handlePlayAgain()
+        elif data['action'] == 'resetGame':
+            self.controller.resetGame()
+            self.controller.setupGame()
 
 class GameOverDialog(QDialog):
     playAgainSignal = pyqtSignal()
@@ -757,7 +782,7 @@ class HomeScreen(QWidget):
             self.hide()
             difficultyMap = {1: 'easy', 2: 'medium', 3: 'hard'}
             difficultyLevel = difficultyMap.get(difficulty, 'medium')
-            self.controller = GameController(numPlayers, difficultyLevel)  # Start game with selected number of players and difficulty level
+            self.controller = GameController(numPlayers, difficultyLevel, playerIndex=0)  # Host is always playerIndex 0
             self.controller.mainMenuRequested.connect(self.returnToMainMenu)
             self.controller.view.show()
 
@@ -798,18 +823,19 @@ class HomeScreen(QWidget):
         self.joinLobbyDialog.show()
         onlineDialog.accept()
 
-    def startHost(self):
+    def startHost(self, clientSockets):
         self.hide()
         self.server = Server('localhost', 5555, self.communicator)
-        self.controller = GameController(numPlayers=2, difficulty='medium', connection=self.server, isHost=True)  # 2 players for online
-        self.server.controller = self.controller 
+        self.server.clientSockets = clientSockets  # Assign client sockets
+        self.controller = GameController(numPlayers=len(clientSockets) + 1, difficulty='medium', connection=self.server, playerIndex=0)  # Adjust numPlayers
+        self.server.controller = self.controller
         self.controller.mainMenuRequested.connect(self.returnToMainMenu)
         self.controller.view.show()
     
     def startClient(self):
         self.hide()
         self.client = Client('localhost', 5555, self.communicator) 
-        self.controller = GameController(numPlayers=2, difficulty='medium', connection=self.client, isHost=False)  # 2 players for online
+        self.controller = GameController(numPlayers=2, difficulty='medium', connection=self.client, playerIndex=1)  # Client is playerIndex 1
         self.client.controller = self.controller 
         self.controller.mainMenuRequested.connect(self.returnToMainMenu)
         self.controller.view.show()
@@ -1380,24 +1406,19 @@ class GameController(QObject):
     exitRequested = pyqtSignal()
     gameOverSignal = pyqtSignal(str)
 
-    def __init__(self, numPlayers, difficulty, connection=None, isHost=False):
+    def __init__(self, numPlayers, difficulty, connection=None, playerIndex=0):
         super().__init__()
         self.numPlayers = numPlayers
         self.difficulty = difficulty
-        self.isHost = isHost
-        if connection is None:
-            self.communicator = SignalCommunicator()
-        else:
-            self.communicator = connection.communicator
+        self.playerIndex = playerIndex
+        self.communicator = connection.communicator if connection else SignalCommunicator()
         self.communicator.startGameSignal.connect(self.proceedWithGameSetup)
         self.communicator.proceedWithGameSetupSignal.connect(self.proceedWithGameSetupOnMainThread)
-        self.communicator.updateUISignal.connect(self.updateUI) 
-        if isHost:
-            self.playerType = "Player 1" 
-        else:
-            self.playerType = "Player 2"
+        self.communicator.updateUISignal.connect(self.updateUI)
+        
+        self.playerType = f"Player {self.playerIndex + 1}"
         self.view = GameView(self, self.playerType, self.communicator)
-        self.players = [Player("Player 1"), Player("Player 2")]
+        self.players = [Player(f"Player {i+1}") for i in range(self.numPlayers)]
         self.sevenSwitch = False
         self.deck = []
         self.pile = []
@@ -1435,7 +1456,7 @@ class GameController(QObject):
             self.notifyReset()
         else:
             data = {'action': 'playAgainRequest'}
-            if self.isHost:
+            if self.playerIndex == 0:
                 self.connection.sendToClient(data)
             else:
                 self.connection.sendToServer(data)
@@ -1447,13 +1468,13 @@ class GameController(QObject):
             self.resetGame()
             self.setupGame()
             self.notifyReset()
-        elif not self.isHost:
+        elif self.playerIndex != 0:
             data = {'action': 'playAgainRequest'}
             self.connection.sendToServer(data)
 
     def notifyReset(self):
         data = {'action': 'resetGame'}
-        if self.isHost:
+        if self.playerIndex == 0:
             self.connection.sendToClient(data)
         else:
             self.connection.sendToServer(data)
@@ -1480,7 +1501,7 @@ class GameController(QObject):
     def startGameLoop(self):
         self.timer = QTimer()
         self.timer.timeout.connect(self.gameLoop)
-        self.timer.start(1000)  # Run the game loop every second
+        self.timer.start(1000)
 
     def gameLoop(self):
         currentPlayer = self.players[self.currentPlayerIndex]
@@ -1500,7 +1521,7 @@ class GameController(QObject):
         self.view.placeButton.setText("Opponent's Turn...")
 
     def setupGame(self):
-        if self.isHost:
+        if self.playerIndex == 0:
             self.deck = self.createDeck()
             random.shuffle(self.deck)
             self.dealInitialCards(self.players[0])
@@ -1533,13 +1554,14 @@ class GameController(QObject):
         self.deck = self.deck[9:]
 
     def sendDeckToClient(self):
-        data = {'action': 'deckSync', 
-                'deck': self.deck, 
-                'player2bot': self.players[1].bottomCards,
-                'player2top': self.players[1].topCards,
-                'player2hand': self.players[1].hand
-            }
-        self.connection.sendToClient(data)
+        data = {
+            'action': 'deckSync', 
+            'deck': self.deck, 
+            'player2bot': self.players[1].bottomCards,
+            'player2top': self.players[1].topCards,
+            'player2hand': self.players[1].hand
+        }
+        self.connection.broadcastToClients(data)
                 
     def receiveDeckFromServer(self, data):
         self.deck = data['deck']
@@ -1557,17 +1579,14 @@ class GameController(QObject):
     
     def sendStartGameSignal(self):
         data = {'action': 'startGame', 'gameState': ""}
-        if self.isHost:
-            self.connection.sendToClient(data)
-        else:
-            self.connection.sendToServer(data)
+        self.connection.broadcastToAll(data)
     
     def updateUI(self):
         self.view.enableOpponentHandNotClickable()
         currentPlayer = self.players[self.currentPlayerIndex]
         if not self.topCardSelectionPhase:
             self.view.updateUI(currentPlayer, len(self.deck), self.pile)
-            if self.isHost:
+            if self.playerIndex == 0:
                 self.view.updatePlayerHandButtons(self.players[0].hand)
                 self.view.updateOpponentHandButtons(self.players[1].hand)
                 self.view.updatePlayerTopCardButtons(self.players[0].topCards)
@@ -1768,10 +1787,7 @@ class GameController(QObject):
         return len(set(card[0] for card in self.pile[-4:])) == 1
 
     def isSessionPlayer(self):
-        if self.isHost:
-            return self.currentPlayerIndex == 0 and self.playerType == "Player 1"
-        else:
-            return self.currentPlayerIndex == 1 and self.playerType == "Player 2"
+        return self.currentPlayerIndex == self.playerIndex
     
     def checkGameState(self):
         currentPlayer = self.players[self.currentPlayerIndex]
@@ -1807,18 +1823,18 @@ class GameController(QObject):
 
     def updatePlayableCards(self):
         currentPlayer = self.players[self.currentPlayerIndex]
-        handIndex = 0  # To keep track of the actual card index in the player's hand
+        handIndex = 0
 
         for i in range(self.view.playerHandLayout.count()):
             item = self.view.playerHandLayout.itemAt(i)
             if item is None:
                 continue
             lbl = item.widget()
-            if lbl is None or (isinstance(lbl, QLabel) and lbl.pixmap() is None):  # Check if it's the spacer
-                continue  # Skip the spacer
+            if lbl is None or (isinstance(lbl, QLabel) and lbl.pixmap() is None):
+                continue
 
             if handIndex >= len(currentPlayer.hand):
-                break  # Prevent index out of range error
+                break
 
             handCard = currentPlayer.hand[handIndex]
             if handCard[0] in ['2', '10'] or handCard[3] or self.isCardPlayable(handCard):
@@ -1835,16 +1851,10 @@ class GameController(QObject):
                     'action': 'gameOver',
                     'winner': self.players[self.currentPlayerIndex].name
                 }
-                if isinstance(self.connection, Server):
-                    self.connection.sendToClient(data)
-                else:
-                    self.connection.sendToServer(data)
+                self.connection.broadcastToAll(data)
             else:
                 data = self.serializeGameState()
-                if isinstance(self.connection, Server):
-                    self.connection.sendToClient(data)
-                else:
-                    self.connection.sendToServer(data)
+                self.connection.broadcastToAll(data)
 
     def receiveGameState(self, data):
         self.deserializeGameState(data)
