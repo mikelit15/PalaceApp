@@ -1667,7 +1667,7 @@ class GameController(QObject):
         self.startGameLoop()
 
     def createDeck(self):
-        suits = ['clubs', 'spades']
+        suits = ['clubs', 'spades', 'hearts', 'diamonds']
         return [(rank, suit, False, False) for rank in RANKS for suit in suits]
 
     def dealInitialCards(self, player):
@@ -1878,7 +1878,6 @@ class GameController(QObject):
             pixmap = QPixmap(fr"_internal/palaceData/cards/{topCard[0].lower()}_of_{topCard[1].lower()}.png").scaled(CARD_WIDTH, CARD_HEIGHT, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.view.pileLabel.setPixmap(pixmap)
             self.checkGameState()
-            self.gameOver = True
             self.updateUI()
             if not self.gameOver:
                 self.changeTurn()
