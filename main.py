@@ -79,6 +79,7 @@ class SignalCommunicator(QObject):
     playerConnectedSignal = pyqtSignal(str)
     playerDisconnectedSignal = pyqtSignal(str)
     connectionStatusSignal = pyqtSignal(str)
+    disconnectSignal = pyqtSignal() 
 
 def centerDialog(dialog, parent, name):
     offset = 0
@@ -111,6 +112,7 @@ class HostLobby(QDialog):
         self.playerCount = 1  # Starting with host player
         self.communicator = mainWindow.communicator  # Get the communicator from mainWindow
         self.initUI()
+        centerDialog(self, self, "GameView")
 
     def initUI(self):
         layout = QVBoxLayout()
@@ -136,13 +138,14 @@ class HostLobby(QDialog):
 
         self.setLayout(layout)
         self.startServer()
-    
+
     def showEvent(self, event):
         centerDialog(self, self.mainWindow, "Host Lobby")
-    
+
     def startServer(self):
         try:
             self.serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.serverSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.serverSocket.bind(('127.0.0.1', 12345))  # Bind to the loopback address for local testing
             self.serverSocket.listen(5)
             self.communicator.logTextSignal.emit("Server started, waiting for connections...")
@@ -163,6 +166,7 @@ class HostLobby(QDialog):
                 if len(self.clientSockets) >= 1:
                     clientSocket.send(b'lobby full')
                     self.logText.append(f"Connection attempt from {clientAddress}")
+                    clientSocket.close()
                 else:
                     self.clientSockets.append(clientSocket)
                     self.clientAddresses[clientSocket] = clientAddress
@@ -232,7 +236,7 @@ class HostLobby(QDialog):
                 clientSocket.sendall(b'start')
             except Exception as e:
                 self.logText.append(f"Failed to notify client: {e}")
-    
+
     def backToOnlineDialog(self):
         self.running = False
         if self.serverSocket:
@@ -241,13 +245,17 @@ class HostLobby(QDialog):
             clientSocket.close()
         self.accept()
         self.mainWindow.playOnline()
-        
+
     def cleanup(self):
+        self.running = False
         if self.serverSocket:
             self.serverSocket.close()
         for clientSocket in self.clientSockets:
             clientSocket.close()
-        self.running = False
+        self.clientSockets = []
+        self.clientAddresses = {}
+        self.clientNicknames = {}
+        self.playerCount = 1
 
     def closeEvent(self, event):
         self.cleanup()
@@ -267,15 +275,17 @@ class JoinLobby(QDialog):
         self.clientSocket = None
         self.communicator = mainWindow.communicator  # Get the communicator from mainWindow
         self.initUI()
-        
+
         # Connect signals to slots
         self.connectionEstablished.connect(self.onConnectionEstablished)
         self.startSignalReceived.connect(self.onStartSignalReceived)
         self.lobbyFullSignal.connect(self.onLobbyFull)
 
+        centerDialog(self, self, "GameView")
+
     def initUI(self):
         layout = QVBoxLayout()
-        
+
         self.infoLabel = QLabel("Enter host address to join lobby:")
         layout.addWidget(self.infoLabel)
 
@@ -298,7 +308,7 @@ class JoinLobby(QDialog):
         self.backButton = QPushButton("Back")
         self.backButton.clicked.connect(self.backToOnlineDialog)
         layout.addWidget(self.backButton)
-        
+
         self.leaveButton = QPushButton("Leave Server")
         self.leaveButton.setStyleSheet("background-color: red; color: white;")
         self.leaveButton.clicked.connect(self.leaveServer)
@@ -306,7 +316,7 @@ class JoinLobby(QDialog):
         layout.addWidget(self.leaveButton)
 
         self.setLayout(layout)
-    
+
     def showEvent(self, event):
         centerDialog(self, self.mainWindow, "JoinLobby")
 
@@ -317,7 +327,7 @@ class JoinLobby(QDialog):
         try:
             self.clientSocket.connect((hostAddress, 12345))
             self.clientSocket.sendall(nickname.encode('utf-8'))
-            self.connectionEstablished.emit() 
+            self.connectionEstablished.emit()
             threading.Thread(target=self.listenForStartSignal, daemon=True).start()
             self.backButton.setVisible(False)
             self.leaveButton.setVisible(True)
@@ -355,9 +365,9 @@ class JoinLobby(QDialog):
 
     def onConnectionEstablished(self):
         self.communicator.connectionStatusSignal.emit(f"Connected to lobby")
-        
+
     def onStartSignalReceived(self):
-        self.accept() 
+        self.accept()
         self.mainWindow.startClient()
 
     def onLobbyFull(self):
@@ -391,7 +401,7 @@ class JoinLobby(QDialog):
             self.clientSocket.close()
         self.accept()
         self.mainWindow.playOnline()
-    
+
     def cleanup(self):
         if self.clientSocket:
             try:
@@ -421,18 +431,51 @@ class Server:
         threading.Thread(target=self.handleClient).start()
 
     def handleClient(self):
-        while True:
-            try:
+        try:
+            while True:
                 data = self.receiveData(self.clientSocket)
                 if data:
                     self.processClientData(data)
-            except (ConnectionResetError, ConnectionAbortedError, OSError) as e:
-                self.communicator.logTextSignal.emit(f"Connection error: {e}\n")
-                break
-            except Exception as e:
-                self.communicator.logTextSignal.emit(f"Unexpected error: {e}\n")
-        self.clientSocket.close()
+                else:
+                    self.communicator.logTextSignal.emit("Client disconnected.")
+                    self.handleClientDisconnection()
+                    break
+        except (ConnectionResetError, ConnectionAbortedError, OSError) as e:
+            self.communicator.logTextSignal.emit(f"Connection error: {e}\n")
+            self.handleClientDisconnection()
+        except Exception as e:
+            self.communicator.logTextSignal.emit(f"Unexpected error: {e}\n")
+            self.handleClientDisconnection()
+        if self.clientSocket:
+            self.clientSocket.close()
 
+    def handleClientDisconnection(self):
+        self.clientSocket.close()
+        self.clientSocket = None
+        self.communicator.connectionStatusSignal.emit("Client disconnected.")
+        self.communicator.playerDisconnectedSignal.emit("Client has left the server.")
+    
+    def disconnect(self):
+        self.communicator.logTextSignal.emit("Disconnected from client.")
+        self.communicator.disconnectSignal.emit() 
+        if self.clientSocket:
+            try:
+                self.clientSocket.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            self.clientSocket.close()
+            self.clientSocket = None
+        if self.serverSocket:
+            self.serverSocket.close()
+
+    def sendDisconnectSignalToClient(self):
+        if self.clientSocket:
+            try:
+                data = json.dumps({'action': 'disconnect'}).encode('utf-8')
+                self.clientSocket.sendall(struct.pack('>I', len(data)) + data)
+            except Exception as e:
+                self.communicator.logTextSignal.emit(f"Failed to send disconnect signal to client: {e}")
+    
     def processClientData(self, data):
         if data is None:
             return
@@ -515,22 +558,39 @@ class Client:
             self.clientSocket = None  
 
     def handleServer(self):
-        while self.clientSocket: 
-            try:
+        try:
+            while self.clientSocket:
                 data = self.receiveData(self.clientSocket)
                 if data:
+                    if data.get('action') == 'disconnect':
+                        self.communicator.connectionStatusSignal.emit("Server disconnected.")
+                        self.disconnect()
+                        break
                     self.processServerData(data)
                 else:
-                    self.communicator.logTextSignal.emit("No data received in handleServer\n")
-            except (ConnectionResetError, ConnectionAbortedError, OSError) as e:
-                self.communicator.logTextSignal.emit(f"Connection error: {e}\n")
-                break
-            except Exception as e:
-                self.communicator.logTextSignal.emit(f"Unexpected error: {e}\n")
+                    self.communicator.connectionStatusSignal.emit("Server disconnected.")
+                    self.disconnect()
+                    break
+        except (ConnectionResetError, ConnectionAbortedError, OSError) as e:
+            self.communicator.connectionStatusSignal.emit(f"Connection error: {e}\n")
+            self.disconnect()
+        except Exception as e:
+            self.communicator.connectionStatusSignal.emit(f"Unexpected error: {e}\n")
+            self.disconnect()
         if self.clientSocket:
             self.clientSocket.close()
 
-
+    def disconnect(self):
+        if self.clientSocket:
+            try:
+                self.clientSocket.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            self.clientSocket.close()
+            self.clientSocket = None
+        self.communicator.connectionStatusSignal.emit("Disconnected from server.")
+        self.communicator.disconnectSignal.emit()
+    
     def processServerData(self, data):
         if data is None:
             self.communicator.logTextSignal.emit("Received None data from server\n")
@@ -604,13 +664,12 @@ class GameOverDialog(QDialog):
     mainMenuSignal = pyqtSignal()
     exitSignal = pyqtSignal()
 
-    def __init__(self, winnerName, parent=None):
-        super().__init__(parent)
+    def __init__(self, winnerName, parentCoords):
+        super().__init__()
         self.setWindowTitle("Game Over")
+        self.setWindowIcon(QIcon(r"_internal\palaceData\palace.ico"))
         self.setGeometry(805, 350, 300, 200)
-
         layout = QVBoxLayout()
-
         label = QLabel(f"Game Over! {winnerName} wins!")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(label)
@@ -626,11 +685,10 @@ class GameOverDialog(QDialog):
         buttonBox.addWidget(mainMenuButton)
         buttonBox.addWidget(exitButton)
         layout.addLayout(buttonBox)
-
+        
         self.setLayout(layout)
-
-    def showEvent(self, event):
-        centerDialog(self, self.parent(), "GameOverDialog")
+       
+        centerDialog(self, parentCoords, "GameView")
     
     def playAgain(self):
         self.playAgainSignal.emit()
@@ -827,14 +885,14 @@ class HomeScreen(QWidget):
     def startHost(self):
         self.hide()
         self.server = Server('localhost', 5555, self.communicator)
-        self.controller = GameController(numPlayers=2, difficulty='medium', parentCoord=self, connection=self.server, isHost=True)  # Pass the parent
+        self.controller = GameController(numPlayers=2, difficulty='medium', parentCoord=self, connection=self.server, isHost=True, mainWindow=self)  
         self.server.controller = self.controller
         self.controller.view.show()
 
     def startClient(self):
         self.hide()
-        self.client = Client('localhost', 5555, self.communicator)
-        self.controller = GameController(numPlayers=2, difficulty='medium', parentCoord=self, connection=self.client, isHost=False)  # Pass the parent
+        self.client = Client('localhost', 5555, self.communicator) 
+        self.controller = GameController(numPlayers=2, difficulty='medium', parentCoord=self, connection=self.client, isHost=False, mainWindow=self) 
         self.client.controller = self.controller
         self.controller.view.show()
     
@@ -956,6 +1014,7 @@ class GameView(QWidget):
         self.communicator.updateOpponentTopCardsSignal.connect(self.updateOpponentTopCards)
         self.communicator.updateOpponentHandSignal.connect(self.updateOpponentHand)
         self.communicator.resetGameSignal.connect(self.handleResetGame)
+        self.communicator.disconnectSignal.connect(self.handleDisconnect)
 
         # Use the centerDialog function to position the window
         centerDialog(self, parentCoord, "GameView")
@@ -973,7 +1032,13 @@ class GameView(QWidget):
         self.disconnectButton.setFixedWidth(125)
         self.disconnectButton.setFixedHeight(25)
         self.disconnectButton.clicked.connect(self.disconnect)
-        self.layout.addWidget(self.disconnectButton, 2, 0)
+        self.layout.addWidget(self.disconnectButton, 0, 0)
+        
+        # Disconnect Button Spacer (row 0, column 0)
+        self.disconnectButtonSpacer = QLabel()
+        self.disconnectButtonSpacer.setFixedWidth(125)
+        self.disconnectButtonSpacer.setFixedHeight(25)
+        self.layout.addWidget(self.disconnectButtonSpacer, 0, 9)
         
         # Opponent Hand (row 0, column 5)
         self.opponentHandContainer = QWidget()
@@ -1117,19 +1182,18 @@ class GameView(QWidget):
             self.layout.addLayout(self.player4HandLayout, 5, 10, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.setLayout(self.layout)
-
-    def showEvent(self, event):
-        centerDialog(self, self, "GameView")
     
-    def handleResetGame(self):
-        self.clearSelectionLayout()
-    
-    def updateHandButtons(self, hand, layout, isPlayer, rotate):
+    def clear_layout(self, layout):
         while layout.count():
             item = layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+    
+    def handleResetGame(self):
+        self.clearSelectionLayout()
+    
+    def updateHandButtons(self, hand, layout, isPlayer, rotate):
         self.controller.playCardButtons = []
         for idx, card in enumerate(hand):
             button = QLabel()
@@ -1184,15 +1248,15 @@ class GameView(QWidget):
         self.updateOpponentBottomCardButtons(bottomCards)
     
     def updatePlayerHandButtons(self, hand):
+        self.clear_layout(self.playerHandLayout)  # Clear the layout before updating
         self.updateHandButtons(hand, self.playerHandLayout, True, False)
-    
+
     def updateOpponentHandButtons(self, hand):
+        self.clear_layout(self.opponentHandLayout)  # Clear the layout before updating
         self.updateHandButtons(hand, self.opponentHandLayout, False, False)
 
     def updatePlayerTopCardButtons(self, topCards):
-        for i in reversed(range(self.topCardsLayout.count())):
-            self.topCardsLayout.itemAt(i).widget().deleteLater()
-
+        self.clear_layout(self.topCardsLayout)  # Clear the layout before updating
         for card in topCards:
             button = QLabel()
             button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
@@ -1208,9 +1272,7 @@ class GameView(QWidget):
             self.topCardsLayout.addWidget(self.placeholder)
 
     def updateOpponentTopCardButtons(self, topCards):
-        for i in reversed(range(self.opponentTopCardsLayout.count())):
-            self.opponentTopCardsLayout.itemAt(i).widget().deleteLater()
-
+        self.clear_layout(self.opponentTopCardsLayout)  # Clear the layout before updating
         for card in topCards:
             button = QLabel()
             button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
@@ -1226,9 +1288,7 @@ class GameView(QWidget):
             self.opponentTopCardsLayout.addWidget(self.placeholder)
 
     def updatePlayerBottomCardButtons(self, bottomCards):
-        for i in reversed(range(self.bottomCardsLayout.count())):
-            self.bottomCardsLayout.itemAt(i).widget().deleteLater()
-
+        self.clear_layout(self.bottomCardsLayout)  # Clear the layout before updating
         for card in bottomCards:
             button = QLabel()
             button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
@@ -1243,9 +1303,7 @@ class GameView(QWidget):
             self.bottomCardsLayout.addWidget(self.placeholder)
 
     def updateOpponentBottomCardButtons(self, bottomCards):
-        for i in reversed(range(self.opponentBottomCardsLayout.count())):
-            self.opponentBottomCardsLayout.itemAt(i).widget().deleteLater()
-
+        self.clear_layout(self.opponentBottomCardsLayout)  # Clear the layout before updating
         for card in bottomCards:
             button = QLabel()
             button.setFixedSize(BUTTON_WIDTH, BUTTON_HEIGHT)
@@ -1429,6 +1487,15 @@ class GameView(QWidget):
                 widget.setEnabled(True)
                 widget.mousePressEvent = lambda event: None 
 
+    def handleDisconnect(self):
+        if self.controller.isHost:
+            self.controller.view.updateLogText("Client has disconnected.")
+            self.controller.view.disablePlayerHand()
+        else:
+            self.controller.disconnect()
+            self.close()
+            self.controller.returnToMainMenu()
+    
     def disconnect(self):
         self.controller.disconnect()
         self.close()
@@ -1441,11 +1508,12 @@ class GameView(QWidget):
 class GameController(QObject):
     gameOverSignal = pyqtSignal(str)
 
-    def __init__(self, numPlayers, difficulty, parentCoord, connection=None, isHost=False):
+    def __init__(self, numPlayers, difficulty, parentCoord, connection=None, isHost=False, mainWindow=None):
         super().__init__()
         self.numPlayers = numPlayers
         self.difficulty = difficulty
         self.isHost = isHost
+        self.mainWindow = mainWindow  # Add reference to mainWindow
         if connection is None:
             self.communicator = SignalCommunicator()
         else:
@@ -1455,7 +1523,6 @@ class GameController(QObject):
         self.communicator.updateUISignal.connect(self.updateUI)
         self.communicator.updateDeckSignal.connect(self.receiveDeckFromServer)
         self.gameOverSignal.connect(self.stopTimer)
-        self.gameOverSignal.connect(self.showGameOverDialog)
         self.communicator.setupGameSignal.connect(self.setupGame)
         if isHost:
             self.playerType = "Player 1"
@@ -1478,20 +1545,31 @@ class GameController(QObject):
         # Track threads for cleanup
         self.threads = []
 
+    def handleDisconnect(self):
+        if self.isHost:
+            self.view.updateLogText("Client has disconnected.")
+            self.view.disablePlayerHand()
+        else:
+            self.disconnect()
+            self.returnToMainMenu()
+    
+    def disconnect(self):
+        self.gameOver = True
+        self.closeThreads()
+        if self.connection:
+            self.connection.close()
+        if not self.isHost:
+            self.handleDisconnect()
+    
+    def returnToMainMenu(self):
+        self.mainWindow.returnToMainMenu()
+    
     def showGameOverDialog(self, winnerName):
         dialog = GameOverDialog(winnerName, self.view)
         dialog.playAgainSignal.connect(self.requestPlayAgain)
         dialog.mainMenuSignal.connect(self.returnToMainMenu)
         dialog.exitSignal.connect(self.exitGame)
         dialog.exec()
-
-    def returnToMainMenu(self):
-        self.communicator = SignalCommunicator()
-        homeScreen = HomeScreen(self.communicator)
-        homeScreen.show()
-        # self.closeThreads()
-        # self.closeConnections()
-        # self.view.close()
     
     def exitGame(self):
         QCoreApplication.instance().quit
@@ -1535,11 +1613,12 @@ class GameController(QObject):
         self.view.clearSelectionLayout()
         self.communicator.resetGameSignal.emit()
     
-    def stopTimer(self):
+    def stopTimer(self, winner):
         if hasattr(self, 'timer'):
             self.timer.stop()
-        currentPlayer = self.players[self.currentPlayerIndex]
-        self.view.updateUI(currentPlayer, len(self.deck), self.pile)
+        QApplication.processEvents()
+        time.sleep(1.2)
+        self.showGameOverDialog(winner)
     
     def startGameLoop(self):
         self.timer = QTimer()
@@ -1547,9 +1626,8 @@ class GameController(QObject):
         self.timer.start(1000)  # Run the game loop every second
 
     def gameLoop(self):
-        if not self.gameOver:
-            currentPlayer = self.players[self.currentPlayerIndex]
-            self.view.updateUI(currentPlayer, len(self.deck), self.pile)
+        currentPlayer = self.players[self.currentPlayerIndex]
+        self.view.updateUI(currentPlayer, len(self.deck), self.pile)
 
     def pickUpPile(self):
         if not self.pile:
@@ -1807,7 +1885,6 @@ class GameController(QObject):
             self.sendGameState()
             self.view.placeButton.setText("Opponent's Turn...")
         if self.gameOver:
-            time.sleep(3)
             self.gameOverSignal.emit(currentPlayer.name)
 
     def changeTurn(self):
@@ -1981,8 +2058,8 @@ def main():
     scalingFactorWidth = screenWidth / 1920
     scalingFactorHeight = screenHeight / 1080
     communicator = SignalCommunicator()
-    homeScreen = HomeScreen(communicator)
-    homeScreen.show()
+    mainWindow = HomeScreen(communicator)  # Create the main window
+    mainWindow.show()
     sys.exit(app.exec())
 
 if __name__ == '__main__':
