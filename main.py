@@ -5,11 +5,11 @@ import socket
 import threading
 import struct
 import time
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, \
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, \
     QLabel, QDialog, QGridLayout, QRadioButton, QButtonGroup, QSpacerItem, QSizePolicy, \
     QTextEdit, QLineEdit
-from PyQt6.QtGui import QPixmap, QIcon, QTransform
-from PyQt6.QtCore import Qt, QCoreApplication, QTimer, pyqtSignal, QObject
+from PySide6.QtGui import QPixmap, QIcon, QTransform
+from PySide6.QtCore import Qt, QCoreApplication, QTimer, Signal, QObject
 import qdarktheme
 
 # Dark Mode Styling
@@ -64,22 +64,22 @@ BUTTON_WIDTH = 66
 BUTTON_HEIGHT = 87
 
 class SignalCommunicator(QObject):
-    updateOpponentBottomCardsSignal = pyqtSignal(int, list)
-    updateOpponentTopCardsSignal = pyqtSignal(int, list)
-    updateOpponentHandSignal = pyqtSignal(int, list)
-    updateDeckSignal = pyqtSignal(dict)
-    startGameSignal = pyqtSignal()
-    proceedWithGameSetupSignal = pyqtSignal()
-    updateUISignal = pyqtSignal()
-    resetGameSignal = pyqtSignal()
-    setupGameSignal = pyqtSignal()
-    logTextSignal = pyqtSignal(str)
-    playerCountLabelSignal = pyqtSignal(str)
-    startButtonEnabledSignal = pyqtSignal(bool)
-    playerConnectedSignal = pyqtSignal(str)
-    playerDisconnectedSignal = pyqtSignal(str)
-    connectionStatusSignal = pyqtSignal(str)
-    disconnectSignal = pyqtSignal() 
+    updateOpponentBottomCardsSignal = Signal(int, list)
+    updateOpponentTopCardsSignal = Signal(int, list)
+    updateOpponentHandSignal = Signal(int, list)
+    updateDeckSignal = Signal(dict)
+    startGameSignal = Signal()
+    proceedWithGameSetupSignal = Signal()
+    updateUISignal = Signal()
+    resetGameSignal = Signal()
+    setupGameSignal = Signal()
+    logTextSignal = Signal(str)
+    playerCountLabelSignal = Signal(str)
+    startButtonEnabledSignal = Signal(bool)
+    playerConnectedSignal = Signal(str)
+    playerDisconnectedSignal = Signal(str)
+    connectionStatusSignal = Signal(str)
+    disconnectSignal = Signal() 
 
 def centerDialog(dialog, parent, name):
     offset = 0
@@ -146,7 +146,9 @@ class HostLobby(QDialog):
         try:
             self.serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.serverSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.serverSocket.bind(('127.0.0.1', 12345))  # Bind to the loopback address for local testing
+            host_ip = socket.gethostbyname(socket.gethostname())
+            self.serverSocket.bind((host_ip, 12345))
+            self.logText.append(f"Server started on {host_ip}, port: 12345")
             self.serverSocket.listen(5)
             self.communicator.logTextSignal.emit("Server started, waiting for connections...")
             self.communicator.logTextSignal.emit("Host Connected")
@@ -262,9 +264,9 @@ class HostLobby(QDialog):
         event.accept()
 
 class JoinLobby(QDialog):
-    connectionEstablished = pyqtSignal()
-    startSignalReceived = pyqtSignal()
-    lobbyFullSignal = pyqtSignal()
+    connectionEstablished = Signal()
+    startSignalReceived = Signal()
+    lobbyFullSignal = Signal()
 
     def __init__(self, parent=None, mainWindow=None):
         super().__init__(parent)
@@ -660,9 +662,9 @@ class Client:
             self.clientSocket = None
 
 class GameOverDialog(QDialog):
-    playAgainSignal = pyqtSignal()
-    mainMenuSignal = pyqtSignal()
-    exitSignal = pyqtSignal()
+    playAgainSignal = Signal()
+    mainMenuSignal = Signal()
+    exitSignal = Signal()
 
     def __init__(self, winnerName, parentCoords):
         super().__init__()
@@ -1506,7 +1508,7 @@ class GameView(QWidget):
         event.accept()
     
 class GameController(QObject):
-    gameOverSignal = pyqtSignal(str)
+    gameOverSignal = Signal(str)
 
     def __init__(self, numPlayers, difficulty, parentCoord, connection=None, isHost=False, mainWindow=None):
         super().__init__()
